@@ -1,4 +1,4 @@
-from fastapi import FastAPI, Request
+from fastapi import FastAPI, Request, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from sse_starlette.sse import EventSourceResponse
 from src.rag_query import chat_with_warehouse_system, get_session_history, clear_session_history
@@ -26,11 +26,14 @@ def update_chat_sessions(session_id, title):
         try:
             with open(HISTORY_FILE, "r", encoding="utf-8") as f:
                 sessions = json.load(f)
-        except: sessions = []
+        except: 
+            sessions = []
     
     # เพิ่ม Session ใหม่ไว้บนสุดถ้ายังไม่มี
     if not any(s['id'] == session_id for s in sessions):
-        sessions.insert(0, {"id": session_id, "title": title[:40]})
+        # ตัดหัวข้อให้น่ารักขึ้น
+        display_title = title[:30] + "..." if len(title) > 30 else title
+        sessions.insert(0, {"id": session_id, "title": display_title})
         with open(HISTORY_FILE, "w", encoding="utf-8") as f:
             json.dump(sessions, f, ensure_ascii=False, indent=2)
 
@@ -45,7 +48,6 @@ async def get_sessions():
 @app.delete("/api/sessions/{session_id}")
 async def delete_session(session_id: str):
     """ลบแชทจาก Sidebar (JSON) และ Database (PostgreSQL)"""
-    # ลบจากไฟล์ JSON
     if os.path.exists(HISTORY_FILE):
         with open(HISTORY_FILE, "r", encoding="utf-8") as f:
             sessions = json.load(f)
@@ -53,37 +55,52 @@ async def delete_session(session_id: str):
         with open(HISTORY_FILE, "w", encoding="utf-8") as f:
             json.dump(updated_sessions, f, ensure_ascii=False, indent=2)
     
-    # ลบจาก PostgreSQL
     try:
         clear_session_history(session_id)
     except Exception as e:
         print(f"Error clearing DB: {e}")
+    
     return {"status": "deleted"}
 
 @app.post("/api/chat")
 async def chat_endpoint(request: Request):
-    """ส่งคำตอบแบบ Streaming"""
-    data = await request.json()
-    session_id = data.get("session_id")
-    question = data.get("question")
-    
-    # บันทึกหัวข้อทันที
-    update_chat_sessions(session_id, question)
-    
-    def event_generator():
-        for chunk in chat_with_warehouse_system(session_id, question):
-            if chunk:
-                yield chunk
+    """รับคำถามและส่งคำตอบแบบ Streaming"""
+    try:
+        data = await request.json()
+        session_id = data.get("session_id")
+        question = data.get("question")
+        
+        if not session_id or not question:
+            raise HTTPException(status_code=400, detail="Missing session_id or question")
+        
+        # บันทึกหัวข้อทันที
+        update_chat_sessions(session_id, question)
+        
+        async def event_generator():
+            # ดึงข้อมูลจาก RAG System (ซึ่งเป็น Generator)
+            for chunk in chat_with_warehouse_system(session_id, question):
+                if chunk:
+                    # ส่งในรูปแบบ SSE Standard
+                    yield f"data: {chunk}\n\n"
+                await asyncio.sleep(0.01) # ป้องกัน CPU ทำงานหนักเกินไปในบางจังหวะ
 
-    return EventSourceResponse(event_generator())
+        return EventSourceResponse(event_generator())
+        
+    except Exception as e:
+        print(f"Chat Error: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
 
 @app.get("/api/messages/{session_id}")
 async def get_chat_messages(session_id: str):
     """ดึงประวัติแชทเก่ามาแสดง"""
-    history = get_session_history(session_id)
-    return [{"role": "user" if m.type == "human" else "assistant", "content": m.content} 
-            for m in history.messages]
+    try:
+        history = get_session_history(session_id)
+        return [{"role": "user" if m.type == "human" else "assistant", "content": m.content} 
+                for m in history.messages]
+    except Exception as e:
+        return []
 
 if __name__ == "__main__":
     import uvicorn
-    uvicorn.run(app, host="0.0.0.0", port=8000)
+    # ปรับปรุงให้รัน uvicorn อย่างมั่นคง
+    uvicorn.run("main:app", host="127.0.0.1", port=8000, reload=True)

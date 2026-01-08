@@ -163,78 +163,51 @@ def extract_search_patterns(question: str) -> dict:
 
 # ============================================================================
 # Hybrid Retrieval - ส่วนสำคัญที่สุด!
-# ============================================================================
-def keyword_search_direct(patterns: dict) -> List[Document]:
+# ==========================================================================
+# แก้ไขใน rag_query.py
+def keyword_search_direct(patterns: dict):
     conn = get_db_connection()
     cursor = conn.cursor()
     all_docs = []
-
-    search_terms = patterns["serials"] + patterns["assets"] + patterns["models"]
+    
+    # เน้นค้นหาจาก Serial และ Asset ก่อน
+    search_terms = patterns["serials"] + patterns["assets"]
     
     try:
         for term in search_terms:
+            # เปลี่ยนจาก ILIKE เป็น = เพื่อความแม่นยำ 100%
             query = """
             SELECT document, cmetadata
                 FROM langchain_pg_embedding
-                WHERE document ILIKE %s 
-                   OR (cmetadata->>'Serial')::text ILIKE %s
-                   OR (cmetadata->>'Asset No')::text ILIKE %s
-                   OR (cmetadata->>'Model No.')::text ILIKE %s
-                LIMIT 50 -- เพิ่มขีดจำกัดเพื่อให้ได้ข้อมูลที่เกี่ยวข้องครบถ้วน
+                WHERE (cmetadata->>'Serial')::text = %s 
+                   OR (cmetadata->>'Asset No')::text = %s
+                LIMIT 5
             """
-            cursor.execute(query, (f'%{term}%', f'%{term}%', f'%{term}%', f'%{term}%'))
-            results = cursor.fetchall()
-            
-            print(f"[KEYWORD SEARCH] Term '{term}' found {len(results)} results")
-            
-            for doc_content, metadata in results:
-                all_docs.append(
-                    Document(
-                        page_content=doc_content,
-                        metadata=metadata or {}
-                    )
-                )
-
-        
-    except Exception as e:
-        print(f"[KEYWORD SEARCH ERROR] {e}")
+            cursor.execute(query, (term.upper(), term))
+            for doc_content, metadata in cursor.fetchall():
+                all_docs.append(Document(page_content=doc_content, metadata=metadata or {}))
     finally:
         cursor.close()
-    
+        conn.close()
     return all_docs
+
 def hybrid_retrieve(question: str) -> List[Document]:
-    print(f"\n[HYBRID RETRIEVAL] Question: {question}")
-
-    # 1. Semantic Search (ดึงมาน้อยๆ)
-    retriever = get_retriever()
-    semantic_docs = retriever.invoke(question)
-    
-    # 2. Keyword Search (ดึงเฉพาะที่เจอจริงๆ)
     patterns = extract_search_patterns(question)
-    keyword_docs = []
-    if any(patterns.values()):
-        keyword_docs = keyword_search_direct(patterns)
     
-    # รวมผลลัพธ์
-    all_docs = keyword_docs + semantic_docs
+    # 1. ค้นหาแบบตรงตัวก่อน (Exact Match)
+    keyword_docs = keyword_search_direct(patterns)
     
-    # ลบซ้ำ
-    seen = set()
-    unique_docs = []
-    
-    for doc in all_docs:
-        # ใช้ Serial เป็น Key ในการลบซ้ำจะแม่นยำกว่า
-        serial = doc.metadata.get('Serial', doc.page_content[:100])
-        if serial not in seen:
-            seen.add(serial)
-            unique_docs.append(doc)
-    
-    # ส่งให้ AI แค่ 5-10 รายการแรกพอ (ลดจาก 30)
-    final_docs = unique_docs[:10]
-    print(f"[HYBRID RESULT] Sent {len(final_docs)} unique docs to LLM")
-    
-    return unique_docs[:10]
+    # 2. ถ้าเจอจาก Keyword และมี Serial ตรงเป๊ะ ให้จบงานตรงนี้เลย
+    if patterns["serials"]:
+        target_s = patterns["serials"][0].upper()
+        exact_matches = [d for d in keyword_docs if str(d.metadata.get('Serial')).upper() == target_s]
+        if exact_matches:
+            print(f"[SUCCESS] Found Exact Serial: {target_s}")
+            return exact_matches[:1] # ส่งแค่ตัวเดียวพอ บอทจะได้ไม่หลง
 
+    # 3. ถ้าไม่เจอตัวตรงเป๊ะ ค่อยใช้ Semantic Search ช่วย
+    semantic_docs = get_vectorstore().as_retriever(search_kwargs={"k": 3}).invoke(question)
+    return (keyword_docs + semantic_docs)[:3]
 # ============================================================================
 # Enhanced Prompts
 # ============================================================================
@@ -255,7 +228,7 @@ IT_ASSET_PROMPT = ChatPromptTemplate.from_template("""
 2. **ตอบตามความจริงเท่านั้น** - อย่าเดา อย่าแต่งเติม
 3. **จัดรูปแบบให้อ่านง่าย** - ใช้ emoji, bullet points, หัวข้อชัดเจน
 4. **ถ้ามีหลายรายการ** - แสดงทั้งหมดหรืออย่างน้อย 5 รายการแรก
-5. **ถ้าไม่เจอ** - บอกตรงๆว่า "ไม่พบข้อมูล"
+5. **หากข้อมูลในระบบไม่ตรงกับที่ถาม หรือหาไม่พบ** ให้ตอบว่า "ไม่พบข้อมูลของ [ระบุเลขที่ถาม] ในระบบครับ" ห้ามนำข้อมูลเครื่องอื่นมาตอบแทนเด็ดขาด
 
 ## ตัวอย่างคำตอบที่ดี:
 
