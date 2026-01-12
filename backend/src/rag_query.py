@@ -25,7 +25,7 @@ PG_PORT = os.getenv("PG_PORT")
 PG_DATABASE = os.getenv("PG_DATABASE")
 COLLECTION_NAME = os.getenv("COLLECTION_NAME")
 
-LLM_MODEL = os.getenv("LLM_MODEL", "qwen2.5:0.5b")
+LLM_MODEL = os.getenv("LLM_MODEL", "qwen2.5:3b")
 EMBED_MODEL = os.getenv("EMBED_MODEL", "nomic-embed-text")
 OLLAMA_BASE_URL = "http://localhost:11434"
 
@@ -211,28 +211,29 @@ def hybrid_retrieve(question: str) -> List[Document]:
 # ============================================================================
 # Enhanced Prompts
 # ============================================================================
+# แทนที่ส่วน Enhanced Prompts ใน rag_query.py (บรรทัดประมาณ 200-260)
 
 IT_ASSET_PROMPT = ChatPromptTemplate.from_template("""
-คุณคือ AI IT Support Assistant ที่เชี่ยวชาญในการจัดการ IT Asset
+You are an IT Support Assistant. Answer ONLY in Thai language.
 
-## ข้อมูลจากระบบ:
+## Current Date: {current_date}
+
+## Data from system:
 {context}
 
-## วันที่ปัจจุบัน: {current_date}
-
-## คำถาม:
+## User Question:
 {question}
 
-## วิธีการตอบ:
-1. **อ่านข้อมูลทั้งหมดอย่างละเอียด** - ตรวจสอบทุกรายการ
-2. **ตอบตามความจริงเท่านั้น** - อย่าเดา อย่าแต่งเติม
-3. **จัดรูปแบบให้อ่านง่าย** - ใช้ emoji, bullet points, หัวข้อชัดเจน
-4. **ถ้ามีหลายรายการ** - แสดงทั้งหมดหรืออย่างน้อย 5 รายการแรก
-5. **หากข้อมูลในระบบไม่ตรงกับที่ถาม หรือหาไม่พบ** ให้ตอบว่า "ไม่พบข้อมูลของ [ระบุเลขที่ถาม] ในระบบครับ" ห้ามนำข้อมูลเครื่องอื่นมาตอบแทนเด็ดขาด
+## Instructions:
+1. Read all data carefully
+2. Answer based ONLY on facts from the data above
+3. Use bullet points and emojis for readability
+4. If multiple items found, show all or at least first 5
+5. If data doesn't match the question, say "ไม่พบข้อมูลของ [specific item] ในระบบครับ"
 
-## ตัวอย่างคำตอบที่ดี:
+## Good Answer Examples:
 
-**ถามหา Serial:**
+**When asked about Serial:**
 ```
 🔍 พบข้อมูล Serial TW37KNP21D
 
@@ -244,7 +245,7 @@ IT_ASSET_PROMPT = ChatPromptTemplate.from_template("""
 📍 ตำแหน่ง: Sriracha
 ```
 
-**ถามนับจำนวน:**
+**When asked to count:**
 ```
 📊 มี ThinkPad ทั้งหมด 12 เครื่อง
 
@@ -258,19 +259,18 @@ IT_ASSET_PROMPT = ChatPromptTemplate.from_template("""
 ...
 ```
 
-คำตอบ:
+Answer in Thai only:
 """)
 
 GENERAL_PROMPT = ChatPromptTemplate.from_template("""
-คุณคือ AI IT Support Assistant ที่เป็นมิตร
+You are a friendly IT Support Assistant. Answer in Thai language only.
 
-วันที่: {current_date}
+Current Date: {current_date}
 
-คำถาม: {question}
+User: {question}
 
-คำตอบ (ภาษาไทย เป็นกันเอง):
+Answer in Thai (friendly, helpful tone):
 """)
-
 # ============================================================================
 # Chat History
 # ============================================================================

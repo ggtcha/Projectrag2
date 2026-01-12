@@ -64,31 +64,42 @@ async def delete_session(session_id: str):
 
 @app.post("/api/chat")
 async def chat_endpoint(request: Request):
-    """รับคำถามและส่งคำตอบแบบ Streaming"""
     try:
         data = await request.json()
         session_id = data.get("session_id")
         question = data.get("question")
-        
+
         if not session_id or not question:
             raise HTTPException(status_code=400, detail="Missing session_id or question")
-        
-        # บันทึกหัวข้อทันที
+
+        # บันทึกหัวข้อแชท
         update_chat_sessions(session_id, question)
-        
+
         async def event_generator():
-            # ดึงข้อมูลจาก RAG System (ซึ่งเป็น Generator)
-            for chunk in chat_with_warehouse_system(session_id, question):
-                if chunk:
-                    # ส่งในรูปแบบ SSE Standard
-                    yield f"data: {chunk}\n\n"
-                await asyncio.sleep(0.01) # ป้องกัน CPU ทำงานหนักเกินไปในบางจังหวะ
+            try:
+                for chunk in chat_with_warehouse_system(session_id, question):
+                    if not chunk:
+                        continue
+
+                    # ✅ SSE ต้องเป็น dict ที่มี key "data"
+                    yield {
+                        "data": chunk
+                    }
+
+                    # ปล่อย control ให้ event loop
+                    await asyncio.sleep(0)
+
+            except Exception as e:
+                yield {
+                    "data": f"[Error]: {str(e)}"
+                }
 
         return EventSourceResponse(event_generator())
-        
+
     except Exception as e:
         print(f"Chat Error: {e}")
         raise HTTPException(status_code=500, detail=str(e))
+
 
 @app.get("/api/messages/{session_id}")
 async def get_chat_messages(session_id: str):

@@ -20,32 +20,45 @@ function App() {
 
   useEffect(() => { scrollToBottom(); }, [messages]);
 
+  // ดึงรายชื่อ Sessions จาก Backend
   const fetchSessions = () => {
     fetch('http://localhost:8000/api/sessions')
       .then(res => res.json())
-      .then(setSessions);
+      .then(data => setSessions(data || []))
+      .catch(err => console.error("Fetch sessions error:", err));
   };
 
   useEffect(() => { fetchSessions(); }, []);
 
+  // โหลดข้อความเก่าของ Session นั้นๆ
   const loadSession = async (id) => {
     setSessionId(id);
-    const res = await fetch(`http://localhost:8000/api/messages/${id}`);
-    const data = await res.json();
-    setMessages(data);
+    try {
+      const res = await fetch(`http://localhost:8000/api/messages/${id}`);
+      const data = await res.json();
+      setMessages(data);
+    } catch (err) {
+      console.error("Load messages error:", err);
+    }
   };
 
+  // ลบ Session
   const deleteSession = async (e, id) => {
     e.stopPropagation();
     if (!window.confirm("คุณต้องการลบแชทนี้ใช่หรือไม่?")) return;
-    await fetch(`http://localhost:8000/api/sessions/${id}`, { method: 'DELETE' });
-    if (sessionId === id) {
-      setMessages([]);
-      setSessionId(`session_${Date.now()}`);
+    try {
+      await fetch(`http://localhost:8000/api/sessions/${id}`, { method: 'DELETE' });
+      if (sessionId === id) {
+        setMessages([]);
+        setSessionId(`session_${Date.now()}`);
+      }
+      fetchSessions();
+    } catch (err) {
+      console.error("Delete error:", err);
     }
-    fetchSessions();
   };
 
+  // ส่งคำถาม
   const handleSend = async () => {
     if (!input.trim() || isLoading) return;
 
@@ -64,27 +77,33 @@ function App() {
       const reader = response.body.getReader();
       const decoder = new TextDecoder();
       let accContent = "";
+      
       setMessages(prev => [...prev, { role: 'assistant', content: '' }]);
-
+      
       while (true) {
         const { value, done } = await reader.read();
         if (done) break;
+        
         const chunk = decoder.decode(value, { stream: true });
         const lines = chunk.split('\n');
+        
         lines.forEach(line => {
           if (line.startsWith('data: ')) {
-            accContent += line.replace('data: ', '');
-            setMessages(prev => {
-              const updated = [...prev];
-              updated[updated.length - 1] = { role: 'assistant', content: accContent };
-              return updated;
-            });
+            const content = line.substring(6);
+            if (content) {
+              accContent += content;
+              setMessages(prev => {
+                const updated = [...prev];
+                updated[updated.length - 1] = { role: 'assistant', content: accContent };
+                return updated;
+              });
+            }
           }
         });
       }
       fetchSessions();
     } catch (e) {
-      console.error(e);
+      console.error("Chat error:", e);
     } finally {
       setIsLoading(false);
     }
@@ -92,12 +111,10 @@ function App() {
 
   return (
     <div className="flex h-screen bg-[#FDFBF7] overflow-hidden font-sans">
-      
-      {/* --- Sidebar Section --- */}
+      {/* Sidebar Section */}
       <aside className={`bg-[#171717] text-white flex flex-col transition-all duration-300 ease-in-out border-r border-white/5 shadow-2xl ${
         isSidebarOpen ? 'w-72' : 'w-0'
       } overflow-hidden relative`}>
-        
         <div className="p-6 flex items-center justify-between min-w-[280px]">
           <h2 className="text-xl font-semibold tracking-tight flex items-center gap-3">
             <div className="w-8 h-8 bg-[#D97757] rounded-lg flex items-center justify-center shadow-lg shadow-[#D97757]/20">
@@ -139,20 +156,14 @@ function App() {
         </div>
       </aside>
 
-      {/* --- Main Content Section --- */}
+      {/* Main Content Section */}
       <main className="flex-1 flex flex-col relative overflow-hidden">
-        
-        {/* Floating Toggle Button */}
         {!isSidebarOpen && (
-          <button 
-            onClick={() => setIsSidebarOpen(true)}
-            className="absolute top-4 left-4 z-50 p-2 bg-white border border-gray-200 rounded-lg shadow-md hover:bg-gray-50 transition-all"
-          >
+          <button onClick={() => setIsSidebarOpen(true)} className="absolute top-4 left-4 z-50 p-2 bg-white border border-gray-200 rounded-lg shadow-md hover:bg-gray-50 transition-all">
             <PanelLeftOpen size={20} className="text-gray-600" />
           </button>
         )}
 
-        {/* Chat Content (Centered Layout) */}
         <div className="flex-1 overflow-y-auto p-4 md:p-8">
           <div className={`max-w-4xl mx-auto space-y-8 ${!isSidebarOpen ? 'pt-12' : ''}`}>
             {messages.length === 0 && (
@@ -161,7 +172,6 @@ function App() {
                 <p className="text-xl font-medium text-gray-400">วันนี้ให้ช่วยตรวจสอบอะไรดีคะ?</p>
               </div>
             )}
-
             {messages.map((m, i) => (
               <div key={i} className={`flex ${m.role === 'user' ? 'justify-end' : 'justify-start'} animate-in fade-in slide-in-from-bottom-2`}>
                 <div className={`flex gap-3 max-w-[85%] md:max-w-[75%] ${m.role === 'user' ? 'flex-row-reverse' : 'flex-row'}`}>
@@ -171,9 +181,8 @@ function App() {
                     </div>
                   </div>
                   <div className={`p-4 shadow-sm ${
-                    m.role === 'user' 
-                      ? 'bg-[#FFE8DC] text-[#723b21] rounded-t-3xl rounded-bl-3xl rounded-br-lg' 
-                      : 'bg-white text-gray-700 border border-gray-100 rounded-t-3xl rounded-br-3xl rounded-bl-lg'
+                    m.role === 'user' ? 'bg-[#FFE8DC] text-[#723b21] rounded-t-3xl rounded-bl-3xl rounded-br-lg' 
+                                      : 'bg-white text-gray-700 border border-gray-100 rounded-t-3xl rounded-br-3xl rounded-bl-lg'
                   }`}>
                     <div className="prose prose-slate max-w-none text-sm font-medium">
                       <ReactMarkdown>{m.content}</ReactMarkdown>
@@ -186,22 +195,17 @@ function App() {
           </div>
         </div>
 
-        {/* Input Area (Centered) */}
         <div className="p-6 bg-white/80 backdrop-blur-md border-t border-gray-100">
           <div className="max-w-4xl mx-auto flex gap-4 items-center">
             <input 
               value={input} 
               onChange={e => setInput(e.target.value)} 
-              onKeyPress={e => e.key === 'Enter' && handleSend()}
+              onKeyDown={e => e.key === 'Enter' && handleSend()}
               className="flex-1 p-4 bg-gray-50 border border-gray-200 rounded-2xl outline-none focus:border-[#D97757] focus:bg-white transition-all text-sm"
-              placeholder="ถามเกี่ยวกับ Serial Number อุปกรณ์..."
+              placeholder="ถามอะไรซักอย่าง..."
               disabled={isLoading}
             />
-            <button 
-              onClick={handleSend} 
-              disabled={isLoading} 
-              className="bg-[#D97757] text-white p-4 rounded-2xl shadow-lg hover:bg-[#ff8a50] transition-all disabled:opacity-50 active:scale-95"
-            >
+            <button onClick={handleSend} disabled={isLoading} className="bg-[#D97757] text-white p-4 rounded-2xl shadow-lg hover:bg-[#ff8a50] transition-all disabled:opacity-50">
               {isLoading ? <Loader2 className="animate-spin" size={24} /> : <Send size={24} />}
             </button>
           </div>
