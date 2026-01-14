@@ -54,56 +54,81 @@ function App() {
       console.error("Delete error:", err);
     }
   };
-  const handleSend = async () => {
-    if (!input.trim() || isLoading) return;
+    const handleSend = async () => {
+  if (!input.trim() || isLoading) return;
 
-    setIsLoading(true);
-    const q = input;
-    setMessages(prev => [...prev, { role: 'user', content: q }]);
-    setInput('');
+  setIsLoading(true);
+  const q = input;
+  
+  // 1. เพิ่มข้อความฝั่ง User ในหน้าแชท
+  setMessages(prev => [...prev, { role: 'user', content: q }]);
+  setInput('');
 
-    try {
-      const response = await fetch('http://localhost:8000/api/chat', {
-        method: 'POST',
-        body: JSON.stringify({ session_id: sessionId, question: q }),
-        headers: { 'Content-Type': 'application/json' }
-      });
+  // --- ส่วนที่แก้ไข: ย้ายแชทปัจจุบันขึ้นบนสุดของรายการ Sidebar ทันที ---
+  setSessions(prevSessions => {
+    // หาตำแหน่งของ session ปัจจุบัน
+    const currentIndex = prevSessions.findIndex(s => s.id === sessionId);
+    
+    // ถ้าหาไม่เจอ (เช่น แชทใหม่ที่ยังไม่มีใน list) ให้ข้ามไปก่อน เดี๋ยว fetchSessions ตอนท้ายจะจัดการให้
+    if (currentIndex === -1) return prevSessions; 
 
-      const reader = response.body.getReader();
-      const decoder = new TextDecoder();
-      let accContent = "";
+    // ถ้าอยู่บนสุดอยู่แล้ว ไม่ต้องทำอะไร
+    if (currentIndex === 0) return prevSessions;
+
+    const updatedSessions = [...prevSessions];
+    // ดึง session ตัวปัจจุบันออกมาจากตำแหน่งเดิม
+    const [currentSession] = updatedSessions.splice(currentIndex, 1);
+    // เอาไปใส่ไว้หน้าสุด (Index 0)
+    return [currentSession, ...updatedSessions];
+  });
+  // ------------------------------------------------------------
+
+  try {
+    const response = await fetch('http://localhost:8000/api/chat', {
+      method: 'POST',
+      body: JSON.stringify({ session_id: sessionId, question: q }),
+      headers: { 'Content-Type': 'application/json' }
+    });
+
+    const reader = response.body.getReader();
+    const decoder = new TextDecoder();
+    let accContent = "";
+    
+    setMessages(prev => [...prev, { role: 'assistant', content: '' }]);
+    
+    while (true) {
+      const { value, done } = await reader.read();
+      if (done) break;
       
-      setMessages(prev => [...prev, { role: 'assistant', content: '' }]);
+      const chunk = decoder.decode(value, { stream: true });
+      const lines = chunk.split('\n');
       
-      while (true) {
-        const { value, done } = await reader.read();
-        if (done) break;
-        
-        const chunk = decoder.decode(value, { stream: true });
-        const lines = chunk.split('\n');
-        
-        lines.forEach(line => {
-          if (line.startsWith('data: ')) {
-            const content = line.substring(6);
-            if (content) {
-              accContent += content;
-              setMessages(prev => {
-                const updated = [...prev];
-                updated[updated.length - 1] = { role: 'assistant', content: accContent };
-                return updated;
-              });
-            }
+      lines.forEach(line => {
+        if (line.startsWith('data: ')) {
+          const content = line.substring(6);
+          if (content) {
+            accContent += content;
+            setMessages(prev => {
+              const updated = [...prev];
+              updated[updated.length - 1] = { role: 'assistant', content: accContent };
+              return updated;
+            });
           }
-        });
-      }
-      fetchSessions();
-    } catch (e) {
-      console.error("Chat error:", e);
-    } finally {
-      setIsLoading(false);
+        }
+      });
     }
-  };
-
+    
+    // ดึงข้อมูลใหม่อีกครั้งเพื่ออัปเดตชื่อแชท (Title) หรือเวลาจาก Database
+    fetchSessions(); 
+  } catch (e) {
+    console.error("Chat error:", e);
+  } finally {
+    setIsLoading(false);
+  }
+};
+      useEffect(() => {
+          document.body.style.fontFamily = "'Sarabun', system-ui, -apple-system, sans-serif";
+        }, []);
   return (
     <div className="flex h-screen bg-[#FDFBF7] overflow-hidden font-sans">
       {/* Sidebar Section */}

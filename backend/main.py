@@ -20,7 +20,7 @@ app.add_middleware(
 HISTORY_FILE = "chat_sessions.json"
 
 def update_chat_sessions(session_id, title):
-    """บันทึกรายชื่อ Session ลงไฟล์ JSON สำหรับแสดงใน Sidebar"""
+    """บันทึกรายชื่อ Session และย้ายอันล่าสุดขึ้นบนสุดเสมอ"""
     sessions = []
     if os.path.exists(HISTORY_FILE):
         try:
@@ -29,13 +29,25 @@ def update_chat_sessions(session_id, title):
         except: 
             sessions = []
     
-    # เพิ่ม Session ใหม่ไว้บนสุดถ้ายังไม่มี
-    if not any(s['id'] == session_id for s in sessions):
-        # ตัดหัวข้อให้น่ารักขึ้น
+    # 1. หาว่ามี session นี้อยู่เดิมไหม
+    existing_session = next((s for s in sessions if s['id'] == session_id), None)
+    
+    if existing_session:
+        # ถ้ามีอยู่แล้ว ให้ลบออกจากตำแหน่งเดิม
+        sessions = [s for s in sessions if s['id'] != session_id]
+        # ใช้ Title เดิม หรือจะอัปเดตตามคำถามล่าสุดก็ได้ (ในที่นี้ขอใช้ title เดิมเพื่อความนิ่ง)
+        new_entry = existing_session
+    else:
+        # ถ้าไม่มี (แชทใหม่) สร้าง entry ใหม่
         display_title = title[:30] + "..." if len(title) > 30 else title
-        sessions.insert(0, {"id": session_id, "title": display_title})
-        with open(HISTORY_FILE, "w", encoding="utf-8") as f:
-            json.dump(sessions, f, ensure_ascii=False, indent=2)
+        new_entry = {"id": session_id, "title": display_title}
+
+    # 2. เอาไปใส่ไว้ที่ลำดับ 0 (บนสุด) เสมอ
+    sessions.insert(0, new_entry)
+
+    # 3. เซฟลงไฟล์
+    with open(HISTORY_FILE, "w", encoding="utf-8") as f:
+        json.dump(sessions, f, ensure_ascii=False, indent=2)
 
 @app.get("/api/sessions")
 async def get_sessions():

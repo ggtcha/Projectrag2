@@ -40,3 +40,15 @@
 .read-the-docs {
   color: #888;
 }
+.prose {
+    text-align: left !important;
+    letter-spacing: 0 !important;
+    word-spacing: normal !important;
+    text-rendering: optimizeSpeed !important;
+    white-space: pre-wrap !important;
+}
+
+/* ลบ CSS ที่อาจไปกวนจากส่วนอื่น */
+#root {
+    text-align: left !important; /* ห้ามใช้ center ในส่วนที่มีแชทไทย */
+}

@@ -182,9 +182,10 @@ def hybrid_retrieve(question: str) -> List[Document]:
     return (keyword_docs + semantic_docs)[:3]
 
 # Enhanced Prompts
-
+# --- แก้ไข IT_ASSET_PROMPT ---
 IT_ASSET_PROMPT = ChatPromptTemplate.from_template("""
-You are an IT Support Assistant. Answer ONLY in Thai language.
+You are an IT Support Assistant. 
+Answer in the SAME LANGUAGE as the user's question (Thai or English).
 
 ## Current Date: {current_date}
 
@@ -195,53 +196,24 @@ You are an IT Support Assistant. Answer ONLY in Thai language.
 {question}
 
 ## Instructions:
-1. Read all data carefully
-2. Answer based ONLY on facts from the data above
-3. Use bullet points and emojis for readability
-4. If multiple items found, show all or at least first 5
-5. If data doesn't match the question, say "ไม่พบข้อมูลของ [specific item] ในระบบครับ"
+1. Read all data carefully.
+2. Answer based ONLY on facts from the data above.
+3. Use bullet points and emojis for readability.
+4. If multiple items found, show all or at least first 5.
+5. If data doesn't match the question, say "I couldn't find information for [item]" in the user's language.
 
-## Good Answer Examples:
-
-**When asked about Serial:**
-```
-🔍 พบข้อมูล Serial TW37KNP21D
-
-📦 รุ่น: 6100 12G Class4 PoE 2G/2SF+ 139W Switch
-🔢 Model No: HPE-JL679A
-🏷️ Serial: TW37KNP21D
-💼 Asset No: 10029034
-✅ สถานะ: Spare (พร้อมใช้งาน)
-📍 ตำแหน่ง: Sriracha
-```
-
-**When asked to count:**
-```
-📊 มี ThinkPad ทั้งหมด 12 เครื่อง
-
-รายละเอียด:
-✅ Spare: 4 เครื่อง
-⚠️ Obsolete: 8 เครื่อง
-
-รายการ Spare:
-1. T480 - S/N: ABC123 - Asset: 10001234
-2. T490 - S/N: DEF456 - Asset: 10001235
-...
-```
-
-Answer in Thai only:
+Answer:
 """)
 
+# --- แก้ไข GENERAL_PROMPT ---
 GENERAL_PROMPT = ChatPromptTemplate.from_template("""
-You are a friendly IT Support Assistant. Answer in Thai language only.
-
-Current Date: {current_date}
+You are a friendly IT Support Assistant. 
+Answer in the SAME LANGUAGE as the user's question (Thai or English).
 
 User: {question}
 
-Answer in Thai (friendly, helpful tone):
+Answer (friendly, helpful tone):
 """)
-
 # Chat History
 
 @lru_cache(maxsize=10)
