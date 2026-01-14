@@ -15,9 +15,7 @@ from langchain_core.documents import Document
 
 load_dotenv()
 
-# ============================================================================
 # Configuration
-# ============================================================================
 PG_USER = os.getenv("PG_USER")
 PG_PASSWORD = os.getenv("PG_PASSWORD")
 PG_HOST = os.getenv("PG_HOST")
@@ -29,9 +27,7 @@ LLM_MODEL = os.getenv("LLM_MODEL", "qwen2.5:3b")
 EMBED_MODEL = os.getenv("EMBED_MODEL", "nomic-embed-text")
 OLLAMA_BASE_URL = "http://localhost:11434"
 
-# ============================================================================
 # Database Connection
-# ============================================================================
 SQLALCHEMY_DB_URL = (
     f"postgresql+psycopg2://"
     f"{PG_USER}:{PG_PASSWORD}@{PG_HOST}:{PG_PORT}/{PG_DATABASE}"
@@ -45,18 +41,14 @@ PSYCOPG_CONN_INFO = (
     f"port={PG_PORT}"
 )
 
-# ============================================================================
 # Lazy Initialization
-# ============================================================================
 _embeddings = None
 _vectorstore = None
 _retriever = None
 _llm = None
 _db_conn = None
 
-# ============================================================================
 # Core Functions
-# ============================================================================
 
 def get_embeddings():
     global _embeddings
@@ -83,41 +75,33 @@ def get_retriever():
         _vectorstore = get_vectorstore()
         _retriever = _vectorstore.as_retriever(
             search_type="similarity",
-            search_kwargs={
-                "k": 5,  # ลดจาก 30 เหลือ 5 เพื่อความเร็ว AI ไม่ต้องอ่านเยอะ
-            }
+            search_kwargs={"k": 5}
         )
     return _retriever
 
-# --- แก้ไขส่วน get_llm (บรรทัดที่ 84) ---
 def get_llm():
     global _llm
     if _llm is None:
         _llm = ChatOllama(
             model=LLM_MODEL,
-            temperature=0,  # ตั้งเป็น 0 เพื่อให้ตอบตรงประเด็นและลดการคำนวณ
+            temperature=0,
             stream=True,
             base_url=OLLAMA_BASE_URL,
-            # ปรับจูน Context และ Predict ให้เหมาะสมกับ RAM
-            num_ctx=4096,    # ลดจาก 8192 เพื่อประหยัด RAM
-            num_predict=512, # จำกัดความยาวคำตอบไม่ให้พล่ามยาวจนค้าง
+            num_ctx=4096,
+            num_predict=512,
             repeat_penalty=1.2
         )
     return _llm
+
 def get_db_connection():
-    """สร้างการเชื่อมต่อ PostgreSQL โดยตรง"""
     global _db_conn
     if _db_conn is None or _db_conn.closed:
         _db_conn = psycopg2.connect(PSYCOPG_CONN_INFO)
     return _db_conn
 
-# ============================================================================
 # Keyword Extraction
-# ============================================================================
 
 def extract_search_patterns(question: str) -> dict:
-    """ดึงคำค้นหาที่เป็น Serial, Asset, Model จากคำถาม"""
-    
     patterns = {
         "serials": [],
         "assets": [],
@@ -126,15 +110,12 @@ def extract_search_patterns(question: str) -> dict:
         "keywords": []
     }
     
-    # หา Serial Number (8+ ตัวอักษร ตัวพิมพ์ใหญ่และตัวเลข)
     serials = re.findall(r'\b[a-zA-Z0-9-]{4,20}\b', question)
     patterns["serials"].extend([s.upper() for s in serials])
     
-    # หา Asset Number (7-8 หลัก)
     assets = re.findall(r'\b\d{7,10}\b', question)
     patterns["assets"].extend(assets)
     
-    # หา Model keywords
     model_keywords = ["thinkpad", "thinkcentre", "thinkstation", "switch", 
                       "router", "printer", "mac", "elitebook", "optiplex",
                       "g100", "6100", "neverstop"]
@@ -144,7 +125,6 @@ def extract_search_patterns(question: str) -> dict:
         if mk in q_lower:
             patterns["models"].append(mk)
     
-    # หา Location keywords
     location_keywords = ["sriracha", "ศรีราชา", "chonburi", "ชลบุรี", 
                          "custom", "customs"]
     
@@ -152,7 +132,6 @@ def extract_search_patterns(question: str) -> dict:
         if lk in q_lower:
             patterns["locations"].append(lk)
     
-    # General keywords
     if any(k in q_lower for k in ["spare", "พร้อมใช้", "สำรอง"]):
         patterns["keywords"].append("spare")
     
@@ -161,21 +140,17 @@ def extract_search_patterns(question: str) -> dict:
     
     return patterns
 
-# ============================================================================
-# Hybrid Retrieval - ส่วนสำคัญที่สุด!
-# ==========================================================================
-# แก้ไขใน rag_query.py
+# Hybrid Retrieval
+
 def keyword_search_direct(patterns: dict):
     conn = get_db_connection()
     cursor = conn.cursor()
     all_docs = []
     
-    # เน้นค้นหาจาก Serial และ Asset ก่อน
     search_terms = patterns["serials"] + patterns["assets"]
     
     try:
         for term in search_terms:
-            # เปลี่ยนจาก ILIKE เป็น = เพื่อความแม่นยำ 100%
             query = """
             SELECT document, cmetadata
                 FROM langchain_pg_embedding
@@ -194,24 +169,19 @@ def keyword_search_direct(patterns: dict):
 def hybrid_retrieve(question: str) -> List[Document]:
     patterns = extract_search_patterns(question)
     
-    # 1. ค้นหาแบบตรงตัวก่อน (Exact Match)
     keyword_docs = keyword_search_direct(patterns)
     
-    # 2. ถ้าเจอจาก Keyword และมี Serial ตรงเป๊ะ ให้จบงานตรงนี้เลย
     if patterns["serials"]:
         target_s = patterns["serials"][0].upper()
         exact_matches = [d for d in keyword_docs if str(d.metadata.get('Serial')).upper() == target_s]
         if exact_matches:
             print(f"[SUCCESS] Found Exact Serial: {target_s}")
-            return exact_matches[:1] # ส่งแค่ตัวเดียวพอ บอทจะได้ไม่หลง
+            return exact_matches[:1]
 
-    # 3. ถ้าไม่เจอตัวตรงเป๊ะ ค่อยใช้ Semantic Search ช่วย
     semantic_docs = get_vectorstore().as_retriever(search_kwargs={"k": 3}).invoke(question)
     return (keyword_docs + semantic_docs)[:3]
-# ============================================================================
+
 # Enhanced Prompts
-# ============================================================================
-# แทนที่ส่วน Enhanced Prompts ใน rag_query.py (บรรทัดประมาณ 200-260)
 
 IT_ASSET_PROMPT = ChatPromptTemplate.from_template("""
 You are an IT Support Assistant. Answer ONLY in Thai language.
@@ -271,9 +241,8 @@ User: {question}
 
 Answer in Thai (friendly, helpful tone):
 """)
-# ============================================================================
+
 # Chat History
-# ============================================================================
 
 @lru_cache(maxsize=10)
 def get_session_history(session_id: str):
@@ -282,35 +251,29 @@ def get_session_history(session_id: str):
         session_id=session_id
     )
 
-# ============================================================================
 # Intent Classification
-# ============================================================================
 
 IT_ASSET_KEYWORDS = [
     "serial", "s/n", "sn", "asset", "model", "รุ่น", "เครื่อง", "อุปกรณ์",
     "มี", "เหลือ", "กี่", "จำนวน", "spare", "obsolete", "ค้นหา", "หา",
     "thinkpad", "laptop", "switch", "router", "printer", "computer",
-    "location", "ตำแหน่ง", "อยู่ที่", "sriracha", "ศรีราชา", "Model No" ,
+    "location", "ตำแหน่ง", "อยู่ที่", "sriracha", "ศรีราชา", "Model No",
     "model no", "asset no", "asset no.", "serial number"
 ]
 
 def classify_intent(question: str) -> str:
     q_lower = question.lower()
     
-    # มี Serial/Asset pattern = แน่นอนว่าเป็น IT Asset
     if re.search(r'[A-Z0-9]{7,}', question):
         return "it_asset"
     
-    # มี keywords
     if any(k in q_lower for k in IT_ASSET_KEYWORDS):
         return "it_asset"
     
     return "general"
 
-# ============================================================================
 # Context Formatting
-# ============================================================================
-# แก้ไขฟังก์ชัน format_context_for_llm
+
 def format_context_for_llm(docs, max_docs: int = 50) -> str:
     if not docs:
         return "ไม่พบข้อมูล"
@@ -321,7 +284,6 @@ def format_context_for_llm(docs, max_docs: int = 50) -> str:
     for i, doc in enumerate(docs, 1):
         meta = doc.metadata
         
-        # ฟังก์ชันช่วยดึงค่าแบบ Case-insensitive และรองรับหลายชื่อเรียก
         def get_val(keys_list):
             low_meta = {k.lower(): v for k, v in meta.items()}
             for k in keys_list:
@@ -329,7 +291,6 @@ def format_context_for_llm(docs, max_docs: int = 50) -> str:
                 if k.lower() in low_meta: return low_meta[k.lower()]
             return "N/A"
 
-        # ดึงข้อมูลให้ครบตามหัวตาราง Excel
         model_name = get_val(['model', 'Model Name'])
         model_no = get_val(['model no.', 'model no', 'model_no'])
         serial = get_val(['serial', 'serial number', 's/n'])
@@ -347,16 +308,14 @@ def format_context_for_llm(docs, max_docs: int = 50) -> str:
         parts.append("-" * 30)
     
     return "\n".join(parts)
-# ============================================================================
+
 # Main Chat Function
-# ============================================================================
 
 def chat_with_warehouse_system(
     session_id: str,
     question: str,
     image: bytes | None = None
 ) -> Generator[str, None, None]:
-    """ฟังก์ชันหลัก"""
     
     llm = get_llm()
     history = get_session_history(session_id)
@@ -365,9 +324,7 @@ def chat_with_warehouse_system(
     intent = classify_intent(question)
     print(f"\n[INTENT] {intent}")
     
-    # IT ASSET MODE
     if intent == "it_asset":
-        # ใช้ Hybrid Retrieval
         docs = hybrid_retrieve(question)
         
         if not docs:
@@ -399,7 +356,6 @@ def chat_with_warehouse_system(
         history.add_ai_message(full_response)
         return
     
-    # GENERAL MODE
     chain = (
         {
             "question": RunnablePassthrough(),
@@ -418,9 +374,7 @@ def chat_with_warehouse_system(
     history.add_user_message(question)
     history.add_ai_message(full_response)
 
-# ============================================================================
 # Utilities
-# ============================================================================
 
 def clear_session_history(session_id: str):
     history = get_session_history(session_id)

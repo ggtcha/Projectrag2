@@ -20,7 +20,6 @@ function App() {
 
   useEffect(() => { scrollToBottom(); }, [messages]);
 
-  // ดึงรายชื่อ Sessions จาก Backend
   const fetchSessions = () => {
     fetch('http://localhost:8000/api/sessions')
       .then(res => res.json())
@@ -30,7 +29,6 @@ function App() {
 
   useEffect(() => { fetchSessions(); }, []);
 
-  // โหลดข้อความเก่าของ Session นั้นๆ
   const loadSession = async (id) => {
     setSessionId(id);
     try {
@@ -42,7 +40,6 @@ function App() {
     }
   };
 
-  // ลบ Session
   const deleteSession = async (e, id) => {
     e.stopPropagation();
     if (!window.confirm("คุณต้องการลบแชทนี้ใช่หรือไม่?")) return;
@@ -57,8 +54,6 @@ function App() {
       console.error("Delete error:", err);
     }
   };
-
-  // ส่งคำถาม
   const handleSend = async () => {
     if (!input.trim() || isLoading) return;
 
@@ -155,8 +150,6 @@ function App() {
           ))}
         </div>
       </aside>
-
-      {/* Main Content Section */}
       <main className="flex-1 flex flex-col relative overflow-hidden">
         {!isSidebarOpen && (
           <button onClick={() => setIsSidebarOpen(true)} className="absolute top-4 left-4 z-50 p-2 bg-white border border-gray-200 rounded-lg shadow-md hover:bg-gray-50 transition-all">

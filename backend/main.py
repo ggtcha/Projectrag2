@@ -81,7 +81,7 @@ async def chat_endpoint(request: Request):
                     if not chunk:
                         continue
 
-                    # ✅ SSE ต้องเป็น dict ที่มี key "data"
+                    # SSE ต้องเป็น dict ที่มี key "data"
                     yield {
                         "data": chunk
                     }
@@ -113,5 +113,5 @@ async def get_chat_messages(session_id: str):
 
 if __name__ == "__main__":
     import uvicorn
-    # ปรับปรุงให้รัน uvicorn อย่างมั่นคง
+
     uvicorn.run("main:app", host="127.0.0.1", port=8000, reload=True)
