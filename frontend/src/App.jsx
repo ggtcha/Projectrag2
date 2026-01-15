@@ -1,3 +1,4 @@
+// 1# ============================================================================
 import React, { useState, useEffect, useRef } from 'react';
 import { 
   Plus, Send, Bot, User, MessageSquare, Loader2, 
@@ -59,26 +60,15 @@ function App() {
 
   setIsLoading(true);
   const q = input;
-  
-  // 1. เพิ่มข้อความฝั่ง User ในหน้าแชท
+
   setMessages(prev => [...prev, { role: 'user', content: q }]);
   setInput('');
-
-  // --- ส่วนที่แก้ไข: ย้ายแชทปัจจุบันขึ้นบนสุดของรายการ Sidebar ทันที ---
   setSessions(prevSessions => {
-    // หาตำแหน่งของ session ปัจจุบัน
     const currentIndex = prevSessions.findIndex(s => s.id === sessionId);
-    
-    // ถ้าหาไม่เจอ (เช่น แชทใหม่ที่ยังไม่มีใน list) ให้ข้ามไปก่อน เดี๋ยว fetchSessions ตอนท้ายจะจัดการให้
     if (currentIndex === -1) return prevSessions; 
-
-    // ถ้าอยู่บนสุดอยู่แล้ว ไม่ต้องทำอะไร
     if (currentIndex === 0) return prevSessions;
-
     const updatedSessions = [...prevSessions];
-    // ดึง session ตัวปัจจุบันออกมาจากตำแหน่งเดิม
     const [currentSession] = updatedSessions.splice(currentIndex, 1);
-    // เอาไปใส่ไว้หน้าสุด (Index 0)
     return [currentSession, ...updatedSessions];
   });
   // ------------------------------------------------------------
@@ -117,8 +107,6 @@ function App() {
         }
       });
     }
-    
-    // ดึงข้อมูลใหม่อีกครั้งเพื่ออัปเดตชื่อแชท (Title) หรือเวลาจาก Database
     fetchSessions(); 
   } catch (e) {
     console.error("Chat error:", e);

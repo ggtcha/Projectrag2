@@ -1,3 +1,4 @@
+# 1# ============================================================================
 from typing import Generator, List
 import os
 import re
@@ -15,7 +16,10 @@ from langchain_core.documents import Document
 
 load_dotenv()
 
-# Configuration
+# ============================================================================
+# CONFIGURATION SECTION
+# ============================================================================
+
 PG_USER = os.getenv("PG_USER")
 PG_PASSWORD = os.getenv("PG_PASSWORD")
 PG_HOST = os.getenv("PG_HOST")
@@ -23,11 +27,10 @@ PG_PORT = os.getenv("PG_PORT")
 PG_DATABASE = os.getenv("PG_DATABASE")
 COLLECTION_NAME = os.getenv("COLLECTION_NAME")
 
-LLM_MODEL = os.getenv("LLM_MODEL", "qwen2.5:3b")
+LLM_MODEL = os.getenv("LLM_MODEL", "qwen2.5:0.5b")
 EMBED_MODEL = os.getenv("EMBED_MODEL", "nomic-embed-text")
 OLLAMA_BASE_URL = "http://localhost:11434"
 
-# Database Connection
 SQLALCHEMY_DB_URL = (
     f"postgresql+psycopg2://"
     f"{PG_USER}:{PG_PASSWORD}@{PG_HOST}:{PG_PORT}/{PG_DATABASE}"
@@ -41,14 +44,19 @@ PSYCOPG_CONN_INFO = (
     f"port={PG_PORT}"
 )
 
-# Lazy Initialization
+# ============================================================================
+# GLOBAL VARIABLES (Lazy Initialization)
+# ============================================================================
+
 _embeddings = None
 _vectorstore = None
 _retriever = None
 _llm = None
 _db_conn = None
 
-# Core Functions
+# ============================================================================
+# INITIALIZATION FUNCTIONS
+# ============================================================================
 
 def get_embeddings():
     global _embeddings
@@ -99,7 +107,9 @@ def get_db_connection():
         _db_conn = psycopg2.connect(PSYCOPG_CONN_INFO)
     return _db_conn
 
-# Keyword Extraction
+# ============================================================================
+# KEYWORD EXTRACTION
+# ============================================================================
 
 def extract_search_patterns(question: str) -> dict:
     patterns = {
@@ -140,7 +150,9 @@ def extract_search_patterns(question: str) -> dict:
     
     return patterns
 
-# Hybrid Retrieval
+# ============================================================================
+# HYBRID RETRIEVAL SYSTEM
+# ============================================================================
 
 def keyword_search_direct(patterns: dict):
     conn = get_db_connection()
@@ -181,8 +193,10 @@ def hybrid_retrieve(question: str) -> List[Document]:
     semantic_docs = get_vectorstore().as_retriever(search_kwargs={"k": 3}).invoke(question)
     return (keyword_docs + semantic_docs)[:3]
 
-# Enhanced Prompts
-# --- แก้ไข IT_ASSET_PROMPT ---
+# ============================================================================
+# PROMPT TEMPLATES
+# ============================================================================
+
 IT_ASSET_PROMPT = ChatPromptTemplate.from_template("""
 You are an IT Support Assistant. 
 Answer in the SAME LANGUAGE as the user's question (Thai or English).
@@ -205,7 +219,6 @@ Answer in the SAME LANGUAGE as the user's question (Thai or English).
 Answer:
 """)
 
-# --- แก้ไข GENERAL_PROMPT ---
 GENERAL_PROMPT = ChatPromptTemplate.from_template("""
 You are a friendly IT Support Assistant. 
 Answer in the SAME LANGUAGE as the user's question (Thai or English).
@@ -214,7 +227,10 @@ User: {question}
 
 Answer (friendly, helpful tone):
 """)
-# Chat History
+
+# ============================================================================
+# CHAT HISTORY MANAGEMENT
+# ============================================================================
 
 @lru_cache(maxsize=10)
 def get_session_history(session_id: str):
@@ -223,7 +239,9 @@ def get_session_history(session_id: str):
         session_id=session_id
     )
 
-# Intent Classification
+# ============================================================================
+# INTENT CLASSIFICATION
+# ============================================================================
 
 IT_ASSET_KEYWORDS = [
     "serial", "s/n", "sn", "asset", "model", "รุ่น", "เครื่อง", "อุปกรณ์",
@@ -244,7 +262,9 @@ def classify_intent(question: str) -> str:
     
     return "general"
 
-# Context Formatting
+# ============================================================================
+# CONTEXT FORMATTING
+# ============================================================================
 
 def format_context_for_llm(docs, max_docs: int = 50) -> str:
     if not docs:
@@ -281,7 +301,9 @@ def format_context_for_llm(docs, max_docs: int = 50) -> str:
     
     return "\n".join(parts)
 
-# Main Chat Function
+# ============================================================================
+# MAIN CHAT FUNCTION
+# ============================================================================
 
 def chat_with_warehouse_system(
     session_id: str,
@@ -346,7 +368,9 @@ def chat_with_warehouse_system(
     history.add_user_message(question)
     history.add_ai_message(full_response)
 
-# Utilities
+# ============================================================================
+# UTILITY FUNCTIONS
+# ============================================================================
 
 def clear_session_history(session_id: str):
     history = get_session_history(session_id)
