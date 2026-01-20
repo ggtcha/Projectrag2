@@ -147,6 +147,7 @@ def extract_search_patterns(question: str) -> dict:
     
     # ✅ ตรวจจับ Specific Model ด้วย patterns ที่แม่นยำขึ้น
     specific_model_patterns = [
+        r'\b(FR-\d+)\b',  # เช่น FR-4080
         r'\b(2930F)\b',  # HP Switch 2930F
         r'\b(2930M)\b',
         r'\b(JL\d+[A-Z])\b',  # Model No เช่น JL693A
@@ -169,7 +170,7 @@ def extract_search_patterns(question: str) -> dict:
     
     # Model keywords (ทั่วไป)
     model_keywords = [
-        "2930f", "2930m",  # HP Switch models
+        "fr-4080", "2930f", "2930m",  # HP Switch models
         "thinkpad", "thinkcentre", "thinkstation", 
         "switch", "router", "printer", "beacon",
         "gateway", "access point", "ups",
@@ -221,7 +222,7 @@ def keyword_search_direct(patterns: dict) -> List[Document]:
         # ✅ เพิ่ม filter: เฉพาะ source = 'inventory'
         base_filter = "AND cmetadata->>'source' = 'inventory'"
         
-        # ✅ ค้นหาด้วย Specific Model (สำคัญที่สุด)
+        # ✅ ค้นหาด้วย Specific Model (สำคัญที่สุด) - เพิ่มเป็น LIMIT 100
         if patterns.get("specific_model"):
             specific_model = patterns["specific_model"]
             print(f"[SQL SEARCH] Specific Model: {specific_model}")
@@ -230,7 +231,7 @@ def keyword_search_direct(patterns: dict) -> List[Document]:
             FROM langchain_pg_embedding
             WHERE UPPER(cmetadata->>'model') LIKE UPPER(%s)
             {base_filter}
-            LIMIT 10
+            LIMIT 100
             """
             cursor.execute(query, (f'%{specific_model}%',))
             rows = cursor.fetchall()
@@ -321,12 +322,38 @@ def hybrid_retrieve(question: str) -> List[Document]:
     # 1. Keyword Search
     print("\n[STEP 1] Keyword Search")
     keyword_docs = keyword_search_direct(patterns)
-    print(f"[STEP 1 RESULT] Found {len(keyword_docs)} docs from keyword search")
+    print(f"[STEP 1 RESULT] Found {len(keyword_docs)} docs from keyword search (before dedup)")
+    
+    # ลบ duplicate โดยใช้ serial number เป็น unique key
+    seen_serials = set()
+    unique_keyword_docs = []
+    for doc in keyword_docs:
+        serial = (doc.metadata.get('serial') or '').strip().upper()
+        asset = (doc.metadata.get('asset_no') or '').strip()
+        
+        # ถ้ามี serial ใช้ serial เป็น key, ถ้าไม่มีใช้ asset
+        if serial:
+            unique_key = f"serial_{serial}"
+        elif asset:
+            unique_key = f"asset_{asset}"
+        else:
+            # ถ้าไม่มีทั้งสองใช้ row + model
+            unique_key = f"row_{doc.metadata.get('row', '')}_{doc.metadata.get('model', '')}"
+        
+        if unique_key not in seen_serials:
+            seen_serials.add(unique_key)
+            unique_keyword_docs.append(doc)
+            print(f"[DEDUP] Added: {unique_key}")
+        else:
+            print(f"[DEDUP] Skipped duplicate: {unique_key}")
+    
+    keyword_docs = unique_keyword_docs
+    print(f"[STEP 1 RESULT] After dedup: {len(keyword_docs)} unique docs")
     
     # ✅ ถ้าเจอ exact match จาก Serial -> return เฉพาะตัวนั้น
     if patterns["serials"]:
         exact_serial = patterns["serials"][0].upper()
-        exact_matches = [d for d in keyword_docs if d.metadata.get('serial', '').upper() == exact_serial]
+        exact_matches = [d for d in keyword_docs if (d.metadata.get('serial') or '').upper() == exact_serial]
         if exact_matches:
             print(f"\n[EXACT MATCH] Serial: {exact_serial}")
             print(f"[RETURN] {len(exact_matches)} document(s)")
@@ -336,58 +363,26 @@ def hybrid_retrieve(question: str) -> List[Document]:
     # ✅ ถ้าเจอ exact match จาก Asset -> return เฉพาะตัวนั้น
     if patterns["assets"]:
         exact_asset = patterns["assets"][0]
-        exact_matches = [d for d in keyword_docs if d.metadata.get('asset_no', '') == exact_asset]
+        exact_matches = [d for d in keyword_docs if (d.metadata.get('asset_no') or '') == exact_asset]
         if exact_matches:
             print(f"\n[EXACT MATCH] Asset: {exact_asset}")
             print(f"[RETURN] {len(exact_matches)} document(s)")
             print(f"{'='*70}\n")
             return exact_matches
     
-    # ✅ ถ้าถาม Specific Model -> ค้นหาแบบเข้มงวด (ไม่ใช้ semantic search)
+    # ✅ ถ้าถาม Specific Model -> return ทั้งหมดจาก keyword_docs
     if patterns["specific_model"]:
         specific_model = patterns["specific_model"].upper()
         print(f"\n[STEP 2] Specific Model Search: {specific_model}")
         
-        # Filter จาก keyword_docs
-        specific_matches = [
-            d for d in keyword_docs 
-            if specific_model in d.metadata.get('model', '').upper()
-        ]
-        
-        if specific_matches:
-            print(f"[STEP 2 RESULT] Found {len(specific_matches)} exact matches in keyword_docs")
-            print(f"[RETURN] {len(specific_matches)} document(s)")
+        if keyword_docs:
+            print(f"[STEP 2 RESULT] Found {len(keyword_docs)} matches")
+            print(f"[RETURN] {len(keyword_docs)} document(s)")
             print(f"{'='*70}\n")
-            return specific_matches[:20]  # เพิ่มเป็น 20 เผื่อมีเยอะ
-        
-        # ค้นหาใน database โดยตรง (เฉพาะ inventory)
-        print(f"[STEP 2B] Searching in database...")
-        try:
-            conn = get_db_connection()
-            cursor = conn.cursor()
-            query = """
-            SELECT document, cmetadata
-            FROM langchain_pg_embedding
-            WHERE UPPER(cmetadata->>'model') LIKE UPPER(%s)
-            AND cmetadata->>'source' = 'inventory'
-            LIMIT 20
-            """
-            cursor.execute(query, (f'%{specific_model}%',))
-            rows = cursor.fetchall()
-            cursor.close()
-            
-            if rows:
-                print(f"[STEP 2B RESULT] Found {len(rows)} matches in database")
-                print(f"[RETURN] {len(rows)} document(s)")
-                print(f"{'='*70}\n")
-                return [Document(page_content=doc, metadata=meta or {}) for doc, meta in rows]
-            else:
-                # ถ้าไม่เจออะไรเลย -> return empty
-                print(f"[STEP 2B] No matches found for {specific_model}")
-                print(f"{'='*70}\n")
-                return []
-        except Exception as e:
-            print(f"[ERROR] Database search failed: {e}")
+            return keyword_docs  # return ทั้งหมด (สูงสุด 100 จาก LIMIT)
+        else:
+            print(f"[STEP 2] No matches found for {specific_model}")
+            print(f"{'='*70}\n")
             return []
     
     # 2. ถ้ามี keyword results -> ใช้ keyword results
@@ -405,7 +400,7 @@ def hybrid_retrieve(question: str) -> List[Document]:
             search_type="similarity",
             search_kwargs={
                 "k": 10,
-                "filter": {"source": "inventory"}  # ← เพิ่ม filter
+                "filter": {"source": "inventory"}
             }
         ).invoke(question)
         print(f"[STEP 4 RESULT] Found {len(semantic_docs)} docs from semantic search")
@@ -416,7 +411,7 @@ def hybrid_retrieve(question: str) -> List[Document]:
             before_filter = len(semantic_docs)
             semantic_docs = [
                 d for d in semantic_docs
-                if specific_model in d.metadata.get('model', '').upper()
+                if specific_model in (d.metadata.get('model') or '').upper()
             ]
             print(f"[FILTER] {before_filter} -> {len(semantic_docs)} docs after filtering for {specific_model}")
         
@@ -600,7 +595,7 @@ def classify_intent(question: str) -> str:
         "มี", "เหลือ", "กี่", "จำนวน", "spare", "obsolete", "ค้นหา", "หา",
         "thinkpad", "laptop", "switch", "router", "printer", "computer",
         "location", "ตำแหน่ง", "อยู่ที่", "sriracha", "ศรีราชา",
-        "model no", "asset no", "serial number", "2930f", "2930m"
+        "model no", "asset no", "serial number", "2930f", "2930m", "fr-4080"
     ]
     
     # Ticket keywords
@@ -668,23 +663,16 @@ def chat_with_warehouse_system(
             total_docs = len(docs)
             print(f"[CHAT] Total documents: {total_docs}")
             
-            # กำหนดจำนวนที่แสดง
-            if total_docs == 1:
-                display_limit = 1
-            elif total_docs <= 10:
-                display_limit = total_docs
-            else:
-                display_limit = 10
+            # แสดงทั้งหมด ไม่จำกัด
+            display_limit = total_docs
             
             print(f"[CHAT] Will display: {display_limit} items")
             
             # Header
             if total_docs == 1:
                 header = "พบข้อมูล 1 รายการ:\n\n"
-            elif total_docs <= 10:
-                header = f"พบข้อมูล {total_docs} รายการ:\n\n"
             else:
-                header = f"พบข้อมูล {total_docs} รายการ (แสดง 10 รายการแรก):\n\n"
+                header = f"พบข้อมูล {total_docs} รายการ:\n\n"
             
             yield header
             print(f"[CHAT] ✓ Sent header")
@@ -761,18 +749,6 @@ def chat_with_warehouse_system(
                 yield separator
                 full_response_parts.append(separator)
                 print(f"[CHAT] ✓ Sent item {i} separator")
-            
-            # Footer (ถ้ามีมากกว่า 10)
-            if total_docs > 10:
-                remaining = total_docs - 10
-                footer = f"\n💡 มีอีก {remaining} รายการที่ไม่แสดง\n" \
-                        f"🔍 ลองค้นหาแบบเจาะจงมากขึ้น:\n" \
-                        f"   • ระบุ Serial Number (เช่น 'หา serial TW33KR41B2')\n" \
-                        f"   • ระบุ Asset Number (เช่น 'หา asset 10053061')\n" \
-                        f"   • ระบุ Location (เช่น 'อุปกรณ์ที่ Customs Building')\n"
-                yield footer
-                full_response_parts.append(footer)
-                print(f"[CHAT] ✓ Sent footer")
             
             # บันทึก history แบบเต็ม
             full_response = "".join(full_response_parts)
