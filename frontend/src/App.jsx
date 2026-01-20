@@ -1,4 +1,4 @@
-// 1# ============================================================================
+//3# ============================================================================
 import React, { useState, useEffect, useRef } from 'react';
 import { 
   Plus, Send, Bot, User, MessageSquare, Loader2, 
@@ -13,6 +13,7 @@ function App() {
   const [isLoading, setIsLoading] = useState(false);
   const [sessionId, setSessionId] = useState(`session_${Date.now()}`);
   const [isSidebarOpen, setIsSidebarOpen] = useState(true);
+  const [deleteConfirmId, setDeleteConfirmId] = useState(null);
   const messagesEndRef = useRef(null);
 
   const scrollToBottom = () => {
@@ -43,7 +44,11 @@ function App() {
 
   const deleteSession = async (e, id) => {
     e.stopPropagation();
-    if (!window.confirm("คุณต้องการลบแชทนี้ใช่หรือไม่?")) return;
+    setDeleteConfirmId(id);
+  };
+
+  const confirmDelete = async () => {
+    const id = deleteConfirmId;
     try {
       await fetch(`http://localhost:8000/api/sessions/${id}`, { method: 'DELETE' });
       if (sessionId === id) {
@@ -53,72 +58,107 @@ function App() {
       fetchSessions();
     } catch (err) {
       console.error("Delete error:", err);
+    } finally {
+      setDeleteConfirmId(null);
     }
   };
-    const handleSend = async () => {
-  if (!input.trim() || isLoading) return;
 
-  setIsLoading(true);
-  const q = input;
+  const handleSend = async () => {
+    if (!input.trim() || isLoading) return;
 
-  setMessages(prev => [...prev, { role: 'user', content: q }]);
-  setInput('');
-  setSessions(prevSessions => {
-    const currentIndex = prevSessions.findIndex(s => s.id === sessionId);
-    if (currentIndex === -1) return prevSessions; 
-    if (currentIndex === 0) return prevSessions;
-    const updatedSessions = [...prevSessions];
-    const [currentSession] = updatedSessions.splice(currentIndex, 1);
-    return [currentSession, ...updatedSessions];
-  });
-  // ------------------------------------------------------------
+    setIsLoading(true);
+    const q = input;
 
-  try {
-    const response = await fetch('http://localhost:8000/api/chat', {
-      method: 'POST',
-      body: JSON.stringify({ session_id: sessionId, question: q }),
-      headers: { 'Content-Type': 'application/json' }
+    setMessages(prev => [...prev, { role: 'user', content: q }]);
+    setInput('');
+    setSessions(prevSessions => {
+      const currentIndex = prevSessions.findIndex(s => s.id === sessionId);
+      if (currentIndex === -1) return prevSessions; 
+      if (currentIndex === 0) return prevSessions;
+      const updatedSessions = [...prevSessions];
+      const [currentSession] = updatedSessions.splice(currentIndex, 1);
+      return [currentSession, ...updatedSessions];
     });
 
-    const reader = response.body.getReader();
-    const decoder = new TextDecoder();
-    let accContent = "";
-    
-    setMessages(prev => [...prev, { role: 'assistant', content: '' }]);
-    
-    while (true) {
-      const { value, done } = await reader.read();
-      if (done) break;
-      
-      const chunk = decoder.decode(value, { stream: true });
-      const lines = chunk.split('\n');
-      
-      lines.forEach(line => {
-        if (line.startsWith('data: ')) {
-          const content = line.substring(6);
-          if (content) {
-            accContent += content;
-            setMessages(prev => {
-              const updated = [...prev];
-              updated[updated.length - 1] = { role: 'assistant', content: accContent };
-              return updated;
-            });
-          }
-        }
+    try {
+      const response = await fetch('http://localhost:8000/api/chat', {
+        method: 'POST',
+        body: JSON.stringify({ session_id: sessionId, question: q }),
+        headers: { 'Content-Type': 'application/json' }
       });
+
+      const reader = response.body.getReader();
+      const decoder = new TextDecoder();
+      let accContent = "";
+      
+      setMessages(prev => [...prev, { role: 'assistant', content: '' }]);
+      
+      while (true) {
+        const { value, done } = await reader.read();
+        if (done) break;
+        
+        const chunk = decoder.decode(value, { stream: true });
+        const lines = chunk.split('\n');
+        
+        lines.forEach(line => {
+          if (line.startsWith('data: ')) {
+            const content = line.substring(6);
+            if (content) {
+              accContent += content;
+              setMessages(prev => {
+                const updated = [...prev];
+                updated[updated.length - 1] = { role: 'assistant', content: accContent };
+                return updated;
+              });
+            }
+          }
+        });
+      }
+      fetchSessions(); 
+    } catch (e) {
+      console.error("Chat error:", e);
+    } finally {
+      setIsLoading(false);
     }
-    fetchSessions(); 
-  } catch (e) {
-    console.error("Chat error:", e);
-  } finally {
-    setIsLoading(false);
-  }
-};
-      useEffect(() => {
-          document.body.style.fontFamily = "'Sarabun', system-ui, -apple-system, sans-serif";
-        }, []);
+  };
+
+  useEffect(() => {
+    document.body.style.fontFamily = "'Sarabun', system-ui, -apple-system, sans-serif";
+  }, []);
+
   return (
     <div className="flex h-screen bg-[#FDFBF7] overflow-hidden font-sans">
+      {/* Delete Confirmation Modal */}
+      {deleteConfirmId && (
+        <div className="fixed inset-0 bg-black/50 backdrop-blur-sm z-50 flex items-center justify-center p-4 animate-in fade-in">
+          <div className="bg-white rounded-2xl shadow-2xl max-w-md w-full p-6 animate-in zoom-in-95 slide-in-from-bottom-4">
+            <div className="flex items-center gap-3 mb-4">
+              <div className="w-10 h-10 bg-red-100 rounded-full flex items-center justify-center">
+                <Trash2 size={20} className="text-red-600" />
+              </div>
+              <h3 className="text-xl font-semibold text-gray-800">ลบบทสนทนา</h3>
+            </div>
+            <p className="text-gray-600 mb-6 leading-relaxed">
+              คุณต้องการลบบทสนทนานี้ใช่หรือไม่? การดำเนินการนี้ไม่สามารถย้อนกลับได้
+            </p>
+            <div className="flex gap-3">
+              <button 
+                onClick={() => setDeleteConfirmId(null)}
+                className="flex-1 px-4 py-3 bg-gray-100 hover:bg-gray-200 text-gray-700 rounded-xl font-medium transition-colors"
+              >
+                ยกเลิก
+              </button>
+              <button 
+                onClick={confirmDelete}
+                className="flex-1 px-4 py-3 bg-red-600 hover:bg-red-700 text-white rounded-xl font-medium transition-colors"
+              >
+                ลบ
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
       {/* Sidebar Section */}
       <aside className={`bg-[#171717] text-white flex flex-col transition-all duration-300 ease-in-out border-r border-white/5 shadow-2xl ${
         isSidebarOpen ? 'w-72' : 'w-0'
@@ -163,6 +203,7 @@ function App() {
           ))}
         </div>
       </aside>
+
       <main className="flex-1 flex flex-col relative overflow-hidden">
         {!isSidebarOpen && (
           <button onClick={() => setIsSidebarOpen(true)} className="absolute top-4 left-4 z-50 p-2 bg-white border border-gray-200 rounded-lg shadow-md hover:bg-gray-50 transition-all">
