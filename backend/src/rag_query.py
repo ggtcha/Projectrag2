@@ -1,3 +1,4 @@
+# 8
 from typing import Generator, List
 import os
 import re
@@ -30,6 +31,8 @@ LLM_MODEL = os.getenv("LLM_MODEL", "qwen2.5:0.5b")
 EMBED_MODEL = os.getenv("EMBED_MODEL", "nomic-embed-text")
 OLLAMA_BASE_URL = "http://localhost:11434"
 
+TICKET_RESPONSE_MODE = os.getenv("TICKET_RESPONSE_MODE", "rule")
+
 SQLALCHEMY_DB_URL = (
     f"postgresql+psycopg2://"
     f"{PG_USER}:{PG_PASSWORD}@{PG_HOST}:{PG_PORT}/{PG_DATABASE}"
@@ -44,7 +47,7 @@ PSYCOPG_CONN_INFO = (
 )
 
 # ============================================================================
-# GLOBAL VARIABLES (Lazy Initialization)
+# GLOBAL VARIABLES
 # ============================================================================
 
 _embeddings = None
@@ -118,7 +121,99 @@ def get_db_connection():
         raise
 
 # ============================================================================
-# KEYWORD EXTRACTION (เดิม - ไม่แก้)
+# INTENT CLASSIFICATION
+# ============================================================================
+
+def classify_intent(question: str) -> str:
+    """แยกประเภทคำถาม: inventory, ticket, หรือ general"""
+    q_lower = question.lower()
+    
+    print(f"\n[INTENT DEBUG] Analyzing: {question}")
+    
+    # Strong ticket indicators
+    strong_ticket_indicators = [
+        r'ทำ(อย่างไร|ยังไง|ไง)',
+        r'วิธี(การ|แก้|ใช้)',
+        r'(how to|how do|how can)',
+        r'(แก้|fix|solve|แก้ไข)',
+        r'ปัญหา',
+        r'(ไม่ทำงาน|not working|broken|เสีย)',
+        r'(ลูกค้า|user|ผู้ใช้)(แจ้ง|report|ถาม)',
+        r'(ticket|issue|problem|help|support)',
+        r'(รีเซ็ต|reset|configure|setup|install|ติดตั้ง)',
+        r'(vpn|network|connection|password|login|email)',
+        r'(เชื่อมต่อ|เข้าสู่ระบบ|ความปลอดภัย)',
+    ]
+    
+    for pattern in strong_ticket_indicators:
+        if re.search(pattern, q_lower):
+            print(f"[INTENT DEBUG] Matched strong ticket indicator: {pattern}")
+            return "ticket"
+    
+    # Serial Number patterns
+    serial_pattern = r'\b[A-Z0-9]{8,20}\b'
+    serial_matches = re.findall(serial_pattern, question.upper())
+    common_words = {'PRINTER', 'MACBOOK', 'THINKPAD', 'LAPTOP', 'SWITCH', 'ROUTER'}
+    real_serials = [s for s in serial_matches if s not in common_words]
+    
+    if real_serials:
+        print(f"[INTENT DEBUG] Found real serial numbers: {real_serials}")
+        return "inventory"
+    
+    # Asset Number
+    if re.search(r'\b\d{7,10}\b', question):
+        print(f"[INTENT DEBUG] Found asset number pattern")
+        return "inventory"
+    
+    # Model No patterns
+    if re.search(r'\b[A-Z]{2,3}-[A-Z0-9]{3,}\b', question.upper()):
+        print(f"[INTENT DEBUG] Found model number pattern")
+        return "inventory"
+    
+    # Keyword scoring
+    inventory_keywords = [
+        "serial", "s/n", "sn", "asset", "รุ่น", "เครื่อง", "อุปกรณ์",
+        "มี", "เหลือ", "กี่", "จำนวน", "spare", "obsolete",
+        "ตำแหน่ง", "อยู่ที่", "location",
+        "model no", "asset no", "serial number",
+        "ค้นหา", "หา", "ดู", "เช็ค", "ตรวจสอบ",
+    ]
+    
+    ticket_keywords = [
+        "ช่วย", "assist", "support", "help",
+        "แจ้ง", "report", "แจ้งเตือน",
+        "ปัญหา", "problem", "issue", "bug", "error",
+        "ด่วน", "urgent", "priority", "สำคัญ",
+        "vpn", "network", "printer", "printing",
+        "software", "application", "system",
+        "account", "access", "permission",
+        "แก้", "fix", "solve", "troubleshoot",
+        "ติดตั้ง", "install", "configure", "setup",
+        "รีเซ็ต", "reset", "restart", "reboot",
+    ]
+    
+    inventory_score = sum(1 for k in inventory_keywords if k in q_lower)
+    ticket_score = sum(1 for k in ticket_keywords if k in q_lower)
+    
+    print(f"[INTENT DEBUG] Scores - Inventory: {inventory_score}, Ticket: {ticket_score}")
+    
+    if ticket_score > inventory_score and ticket_score >= 1:
+        print(f"[INTENT DEBUG] Classified as: ticket (score-based)")
+        return "ticket"
+    
+    if inventory_score > ticket_score and inventory_score >= 2:
+        print(f"[INTENT DEBUG] Classified as: inventory (score-based)")
+        return "inventory"
+    
+    if ticket_score > 0:
+        print(f"[INTENT DEBUG] Classified as: ticket (default with keywords)")
+        return "ticket"
+    
+    print(f"[INTENT DEBUG] Classified as: general")
+    return "general"
+
+# ============================================================================
+# KEYWORD EXTRACTION
 # ============================================================================
 
 def extract_search_patterns(question: str) -> dict:
@@ -133,56 +228,56 @@ def extract_search_patterns(question: str) -> dict:
         "specific_model": None
     }
     
+    device_words = {
+        'PRINTER', 'MACBOOK', 'THINKPAD', 'LAPTOP', 'SWITCH', 
+        'ROUTER', 'DESKTOP', 'MONITOR', 'KEYBOARD', 'SCANNER'
+    }
+    
     # Serial patterns
-    serials = re.findall(r'\b[A-Z0-9]{6,20}\b', question.upper())
+    potential_serials = re.findall(r'\b[A-Z0-9]{8,20}\b', question.upper())
+    serials = [s for s in potential_serials if s not in device_words]
     patterns["serials"].extend(serials)
     
-    # Asset Number patterns
+    # Asset Number
     assets = re.findall(r'\b\d{7,10}\b', question)
     patterns["assets"].extend(assets)
     
-    # Model No. patterns
-    model_nos = re.findall(r'\b[A-Z]{2,}-[A-Z0-9-]+\b', question.upper())
+    # Model No
+    model_nos = re.findall(r'\b[A-Z]{2,3}-[A-Z0-9-]+\b', question.upper())
     patterns["model_nos"].extend(model_nos)
     
-    # ✅ ตรวจจับ Specific Model
-    specific_model_patterns = [
-        r'\b(FR-\d+)\b',
-        r'\b(2930F)\b',
-        r'\b(2930M)\b',
-        r'\b(JL\d+[A-Z])\b',
-        r'\b(YOGA\s+\S+)',
-        r'\b(THINKPAD\s+\S+)',
-        r'\b(THINKCENTRE\s+\S+)',
-        r'\b(ELITEBOOK\s+\S+)',
-        r'\b(OPTIPLEX\s+\S+)',
-        r'\b(MACBOOK\s+\S+)',
-        r'\b(HP\s+\S+\s+\S+)',
-        r'\b([A-Z]+\d+[A-Z]*\s*\d*[A-Z]*)',
-    ]
+    # Specific Model
+    q_lower = question.lower()
+    has_inventory_context = any(k in q_lower for k in ['serial', 'asset', 'จำนวน', 'มี', 'เหลือ'])
     
-    for pattern in specific_model_patterns:
-        match = re.search(pattern, question.upper())
-        if match:
-            patterns["specific_model"] = match.group(1).strip()
-            print(f"[PATTERN MATCH] Detected specific model: {patterns['specific_model']}")
-            break
+    if has_inventory_context:
+        specific_model_patterns = [
+            r'\b(FR-\d+)\b',
+            r'\b(2930F)\b',
+            r'\b(2930M)\b',
+            r'\b(JL\d+[A-Z])\b',
+        ]
+        
+        for pattern in specific_model_patterns:
+            match = re.search(pattern, question.upper())
+            if match:
+                patterns["specific_model"] = match.group(1).strip()
+                print(f"[PATTERN MATCH] Detected specific model: {patterns['specific_model']}")
+                break
     
     # Model keywords
-    model_keywords = [
-        "fr-4080", "2930f", "2930m",
-        "thinkpad", "thinkcentre", "thinkstation", 
-        "switch", "router", "printer", "beacon",
-        "gateway", "access point", "ups",
-        "elitebook", "optiplex", "prodesk",
-        "6100", "g100", "neverstop", "air420",
-        "yoga", "scanner", "sim"
-    ]
-    
-    q_lower = question.lower()
-    for mk in model_keywords:
-        if mk in q_lower:
-            patterns["models"].append(mk)
+    if has_inventory_context:
+        model_keywords = [
+            "fr-4080", "2930f", "2930m",
+            "thinkpad", "thinkcentre", "thinkstation", 
+            "switch", "router", "beacon",
+            "gateway", "access point", "ups",
+            "elitebook", "optiplex", "prodesk",
+        ]
+        
+        for mk in model_keywords:
+            if mk in q_lower:
+                patterns["models"].append(mk)
     
     # Location keywords
     location_keywords = [
@@ -190,7 +285,6 @@ def extract_search_patterns(question: str) -> dict:
         "chonburi", "ชลบุรี",
         "custom", "customs",
         "server room", "building",
-        "kp 4.0", "kp4.0"
     ]
     
     for lk in location_keywords:
@@ -208,11 +302,11 @@ def extract_search_patterns(question: str) -> dict:
     return patterns
 
 # ============================================================================
-# HYBRID RETRIEVAL SYSTEM (เดิม - ไม่แก้)
+# HYBRID RETRIEVAL SYSTEM
 # ============================================================================
 
 def keyword_search_direct(patterns: dict) -> List[Document]:
-    """ค้นหาด้วย SQL โดยตรงจาก metadata (เฉพาะ inventory)"""
+    """ค้นหาด้วย SQL โดยตรงจาก metadata"""
     all_docs = []
     
     try:
@@ -234,7 +328,7 @@ def keyword_search_direct(patterns: dict) -> List[Document]:
             """
             cursor.execute(query, (f'%{specific_model}%',))
             rows = cursor.fetchall()
-            print(f"[SQL RESULT] Found {len(rows)} matches for specific model {specific_model}")
+            print(f"[SQL RESULT] Found {len(rows)} matches")
             for doc_content, metadata in rows:
                 all_docs.append(Document(page_content=doc_content, metadata=metadata or {}))
         
@@ -250,7 +344,7 @@ def keyword_search_direct(patterns: dict) -> List[Document]:
             """
             cursor.execute(query, (serial,))
             rows = cursor.fetchall()
-            print(f"[SQL RESULT] Found {len(rows)} matches for serial {serial}")
+            print(f"[SQL RESULT] Found {len(rows)} matches")
             for doc_content, metadata in rows:
                 all_docs.append(Document(page_content=doc_content, metadata=metadata or {}))
         
@@ -266,7 +360,7 @@ def keyword_search_direct(patterns: dict) -> List[Document]:
             """
             cursor.execute(query, (asset,))
             rows = cursor.fetchall()
-            print(f"[SQL RESULT] Found {len(rows)} matches for asset {asset}")
+            print(f"[SQL RESULT] Found {len(rows)} matches")
             for doc_content, metadata in rows:
                 all_docs.append(Document(page_content=doc_content, metadata=metadata or {}))
         
@@ -282,7 +376,7 @@ def keyword_search_direct(patterns: dict) -> List[Document]:
             """
             cursor.execute(query, (f'%{model_no}%',))
             rows = cursor.fetchall()
-            print(f"[SQL RESULT] Found {len(rows)} matches for model_no {model_no}")
+            print(f"[SQL RESULT] Found {len(rows)} matches")
             for doc_content, metadata in rows:
                 all_docs.append(Document(page_content=doc_content, metadata=metadata or {}))
         
@@ -298,7 +392,7 @@ def keyword_search_direct(patterns: dict) -> List[Document]:
             """
             cursor.execute(query, (f'%{loc}%',))
             rows = cursor.fetchall()
-            print(f"[SQL RESULT] Found {len(rows)} matches for location {loc}")
+            print(f"[SQL RESULT] Found {len(rows)} matches")
             for doc_content, metadata in rows:
                 all_docs.append(Document(page_content=doc_content, metadata=metadata or {}))
         
@@ -318,10 +412,9 @@ def hybrid_retrieve(question: str) -> List[Document]:
     
     patterns = extract_search_patterns(question)
     
-    # 1. Keyword Search
     print("\n[STEP 1] Keyword Search")
     keyword_docs = keyword_search_direct(patterns)
-    print(f"[STEP 1 RESULT] Found {len(keyword_docs)} docs from keyword search (before dedup)")
+    print(f"[STEP 1 RESULT] Found {len(keyword_docs)} docs")
     
     # ลบ duplicate
     seen_serials = set()
@@ -340,56 +433,38 @@ def hybrid_retrieve(question: str) -> List[Document]:
         if unique_key not in seen_serials:
             seen_serials.add(unique_key)
             unique_keyword_docs.append(doc)
-            print(f"[DEDUP] Added: {unique_key}")
-        else:
-            print(f"[DEDUP] Skipped duplicate: {unique_key}")
     
     keyword_docs = unique_keyword_docs
     print(f"[STEP 1 RESULT] After dedup: {len(keyword_docs)} unique docs")
     
-    # Exact match สำหรับ Serial
+    # Exact match for Serial
     if patterns["serials"]:
         exact_serial = patterns["serials"][0].upper()
         exact_matches = [d for d in keyword_docs if (d.metadata.get('serial') or '').upper() == exact_serial]
         if exact_matches:
             print(f"\n[EXACT MATCH] Serial: {exact_serial}")
-            print(f"[RETURN] {len(exact_matches)} document(s)")
-            print(f"{'='*70}\n")
             return exact_matches
     
-    # Exact match สำหรับ Asset
+    # Exact match for Asset
     if patterns["assets"]:
         exact_asset = patterns["assets"][0]
         exact_matches = [d for d in keyword_docs if (d.metadata.get('asset_no') or '') == exact_asset]
         if exact_matches:
             print(f"\n[EXACT MATCH] Asset: {exact_asset}")
-            print(f"[RETURN] {len(exact_matches)} document(s)")
-            print(f"{'='*70}\n")
             return exact_matches
     
     # Specific Model
     if patterns["specific_model"]:
-        specific_model = patterns["specific_model"].upper()
-        print(f"\n[STEP 2] Specific Model Search: {specific_model}")
-        
         if keyword_docs:
-            print(f"[STEP 2 RESULT] Found {len(keyword_docs)} matches")
-            print(f"[RETURN] {len(keyword_docs)} document(s)")
-            print(f"{'='*70}\n")
             return keyword_docs
         else:
-            print(f"[STEP 2] No matches found for {specific_model}")
-            print(f"{'='*70}\n")
             return []
     
-    # 2. ถ้ามี keyword results -> ใช้ keyword results
+    # Use keyword results
     if keyword_docs:
-        print(f"\n[STEP 3] Using keyword results")
-        print(f"[RETURN] {len(keyword_docs[:10])} document(s)")
-        print(f"{'='*70}\n")
         return keyword_docs[:10]
     
-    # 3. Semantic Search (เฉพาะ inventory)
+    # Semantic Search fallback
     print(f"\n[STEP 4] Semantic Search (fallback)")
     try:
         semantic_docs = get_vectorstore().as_retriever(
@@ -399,26 +474,23 @@ def hybrid_retrieve(question: str) -> List[Document]:
                 "filter": {"source": "inventory"}
             }
         ).invoke(question)
-        print(f"[STEP 4 RESULT] Found {len(semantic_docs)} docs from semantic search")
+        print(f"[STEP 4 RESULT] Found {len(semantic_docs)} docs")
         
         if patterns["specific_model"]:
             specific_model = patterns["specific_model"].upper()
-            before_filter = len(semantic_docs)
             semantic_docs = [
                 d for d in semantic_docs
                 if specific_model in (d.metadata.get('model') or '').upper()
             ]
-            print(f"[FILTER] {before_filter} -> {len(semantic_docs)} docs after filtering for {specific_model}")
         
     except Exception as e:
         print(f"[ERROR] Semantic search failed: {e}")
         semantic_docs = []
     
-    # 4. รวมผลลัพธ์
+    # Combine results
     combined = keyword_docs + semantic_docs
-    print(f"\n[STEP 5] Combining results: {len(combined)} total")
     
-    # 5. ลบ duplicate
+    # Remove duplicates
     seen = set()
     unique_docs = []
     for doc in combined:
@@ -431,116 +503,243 @@ def hybrid_retrieve(question: str) -> List[Document]:
             seen.add(key)
             unique_docs.append(doc)
     
-    print(f"[STEP 5 RESULT] {len(unique_docs)} unique documents")
-    print(f"[RETURN] {len(unique_docs[:10])} document(s)")
-    print(f"{'='*70}\n")
     return unique_docs[:10]
 
 # ============================================================================
-# IMPROVED INTENT CLASSIFICATION (ปรับเฉพาะ ticket)
+# TICKET SOLUTION EXTRACTION
 # ============================================================================
 
-def classify_intent(question: str) -> str:
-    """แยกว่าเป็นคำถามเกี่ยวกับ inventory, ticket, หรือ general"""
-    q_lower = question.lower()
+def clean_text_formatting(text: str) -> str:
+    """ทำความสะอาด text"""
+    if not text:
+        return ""
     
-    # ============================================================
-    # INVENTORY KEYWORDS (เดิม - ไม่แก้)
-    # ============================================================
-    inventory_keywords = [
-        "serial", "s/n", "sn", "asset", "model", "รุ่น", "เครื่อง", "อุปกรณ์",
-        "มี", "เหลือ", "กี่", "จำนวน", "spare", "obsolete", "ค้นหา", "หา",
-        "thinkpad", "laptop", "switch", "router", "printer", "computer",
-        "location", "ตำแหน่ง", "อยู่ที่", "sriracha", "ศรีราชา",
-        "model no", "asset no", "serial number", "2930f", "2930m", "fr-4080"
-    ]
+    import html
     
-    # ============================================================
-    # IMPROVED TICKET KEYWORDS (ปรับปรุงใหม่)
-    # ============================================================
-    ticket_keywords = [
-        # คำหลัก
-        "ticket", "support", "issue", "problem", "ปัญหา", "คำถาม",
-        "help", "assist", "request", "เคส", "แจ้ง", "bug", "error",
+    text = html.unescape(text)
+    text = re.sub(r'<[^>]+>', '', text)
+    text = re.sub(r'_{2,}', ' ', text)
+    text = re.sub(r'\*\*([^*]+)\*\*', r'\1', text)
+    text = re.sub(r'\*([^*]+)\*', r'\1', text)
+    text = re.sub(r'__([^_]+)__', r'\1', text)
+    
+    allowed_chars = []
+    for char in text:
+        code_point = ord(char)
         
-        # คำถามแบบ how-to
-        "ทำยังไง", "วิธี", "how to", "how do", "how can", "ขั้นตอน",
-        
-        # คำที่บ่งบอกว่าเป็นปัญหา
-        "แก้", "fix", "solve", "แก้ไข", "รีเซ็ต", "reset",
-        "ไม่ทำงาน", "not working", "broken", "เสีย", "ไม่ได้",
-        
-        # Technical issues
-        "vpn", "network", "connection", "password", "login", "เข้าสู่ระบบ",
-        "install", "ติดตั้ง", "configure", "setup", "เชื่อมต่อ",
-        "email", "อีเมล", "security", "ความปลอดภัย",
-        
-        # Priority/Queue related
-        "urgent", "ด่วน", "priority", "สำคัญ", "high", "สูง",
-        
-        # Tags ที่มักเจอใน ticket
-        "audio", "video", "เสียง", "ภาพ", "performance", "ประสิทธิภาพ",
-        "compatibility", "เข้ากันได้", "automation", "อัตโนมัติ",
-        
-        # Support-specific
-        "technical support", "it support", "ซัพพอร์ต", "helpdesk"
-    ]
+        if (0x0E00 <= code_point <= 0x0E7F or
+            0x0020 <= code_point <= 0x007E or
+            code_point in [0x000A, 0x000D] or
+            0x2000 <= code_point <= 0x206F):
+            allowed_chars.append(char)
+        else:
+            allowed_chars.append(' ')
     
-    # Check for serial/asset patterns (แน่นอนว่าเป็น inventory)
-    if re.search(r'\b[A-Z0-9]{6,20}\b', question.upper()):
-        return "inventory"
+    text = ''.join(allowed_chars)
+    text = re.sub(r'\s+', ' ', text)
+    text = text.strip()
     
-    # Count keyword matches
-    inventory_score = sum(1 for k in inventory_keywords if k in q_lower)
-    ticket_score = sum(1 for k in ticket_keywords if k in q_lower)
-    
-    print(f"[INTENT] Scores - Inventory: {inventory_score}, Ticket: {ticket_score}")
-    
-    # ถ้า ticket score สูงกว่าอย่างชัดเจน
-    if ticket_score > inventory_score and ticket_score >= 2:
-        print(f"[INTENT] Classified as: ticket")
-        return "ticket"
-    
-    # ถ้า inventory score สูงกว่า
-    if inventory_score > ticket_score:
-        print(f"[INTENT] Classified as: inventory")
-        return "inventory"
-    
-    # ถ้ามี ticket keyword อย่างน้อย 1 ตัว
-    if ticket_score > 0:
-        print(f"[INTENT] Classified as: ticket (has keywords)")
-        return "ticket"
-    
-    # Default
-    print(f"[INTENT] Classified as: general")
-    return "general"
+    return text
 
-# ============================================================================
-# ✨ NEW: IMPROVED TICKET RETRIEVAL
-# ============================================================================
+def extract_solutions_from_tickets(docs: List[Document]) -> dict:
+    """Extract solutions จาก ticket documents"""
+    solutions = []
+    problem_subjects = []
+    
+    for doc in docs[:15]:
+        content = doc.page_content
+        subject = doc.metadata.get('subject', '')
+        
+        if 10 < len(subject) < 100:
+            problem_subjects.append(subject)
+        
+        lines = content.split('\n')
+        in_solution_section = False
+        
+        for line in lines:
+            line_lower = line.lower().strip()
+            
+            solution_headers = [
+                'solution:', 'fix:', 'resolution:', 'วิธีแก้:', 'แก้ไข:',
+                'how to fix:', 'troubleshooting:', 'steps to resolve:',
+                'recommended action:', 'การแก้ไข:', 'ขั้นตอน:'
+            ]
+            
+            if any(header in line_lower for header in solution_headers):
+                in_solution_section = True
+                continue
+            
+            end_markers = [
+                'note:', 'warning:', 'status:', 'priority:', 'tags:',
+                'created:', 'updated:', 'assigned:', 'หมายเหตุ:'
+            ]
+            
+            if any(marker in line_lower for marker in end_markers):
+                in_solution_section = False
+                continue
+            
+            if in_solution_section and line.strip():
+                noise_patterns = [
+                    r'^[<>=/\-_]{3,}',
+                    r'^\s*ticket\s*#?\d+',
+                    r'^\s*subject:',
+                    r'^\s*type:',
+                    r'^\s*queue:',
+                    r'problem|issue|error|failed|malfunction',
+                ]
+                
+                is_noise = any(re.search(pattern, line_lower) for pattern in noise_patterns)
+                
+                if not is_noise:
+                    clean_line = clean_text_formatting(line.strip())
+                    
+                    action_verbs = [
+                        'restart', 'reset', 'check', 'verify', 'install', 'uninstall',
+                        'update', 'configure', 'enable', 'disable', 'connect', 'disconnect',
+                        'remove', 'add', 'replace', 'repair', 'contact', 'call',
+                        'ตรวจสอบ', 'รีสตาร์ท', 'รีเซ็ต', 'ติดตั้ง', 'ถอนการติดตั้ง',
+                        'อัปเดต', 'ตั้งค่า', 'เชื่อมต่อ', 'ลบ', 'เพิ่ม', 'เปลี่ยน', 'ติดต่อ'
+                    ]
+                    
+                    has_action = any(verb in clean_line.lower() for verb in action_verbs)
+                    
+                    if has_action and 15 <= len(clean_line) <= 150:
+                        solutions.append(clean_line)
+        
+        numbered_pattern = r'^\s*(?:\d+[\.\):]|-|\*|•)\s+(.+)$'
+        for line in lines:
+            match = re.match(numbered_pattern, line)
+            if match:
+                step = match.group(1).strip()
+                clean_step = clean_text_formatting(step)
+                
+                action_verbs = [
+                    'restart', 'reset', 'check', 'verify', 'install', 'update',
+                    'configure', 'enable', 'disable', 'connect', 'remove', 'replace',
+                    'ตรวจสอบ', 'รีสตาร์ท', 'รีเซ็ต', 'ติดตั้ง', 'อัปเดต', 'ตั้งค่า'
+                ]
+                
+                problem_words = ['problem', 'issue', 'error', 'failed', 'malfunction', 'ปัญหา']
+                
+                has_action = any(verb in clean_step.lower() for verb in action_verbs)
+                is_not_problem = not any(word in clean_step.lower() for word in problem_words)
+                
+                if has_action and is_not_problem and 15 <= len(clean_step) <= 150:
+                    solutions.append(clean_step)
+    
+    unique_solutions = []
+    seen = set()
+    
+    for sol in solutions:
+        normalized = re.sub(r'\s+', ' ', sol.lower().strip())
+        
+        if normalized not in seen and len(normalized) > 15:
+            seen.add(normalized)
+            unique_solutions.append(sol)
+    
+    result = {
+        'problems': list(set(problem_subjects))[:3],
+        'solutions': unique_solutions[:10],
+    }
+    
+    print(f"[EXTRACT] Found {len(result['problems'])} problems, {len(result['solutions'])} solutions")
+    return result
+
+def format_solution_response(question: str, docs: List[Document]) -> str:
+    """Format response แบบ solution-focused"""
+    if not docs:
+        return "🔍 ไม่พบ Support Tickets ที่เกี่ยวข้อง"
+    
+    try:
+        extracted = extract_solutions_from_tickets(docs)
+        
+        if not extracted or not isinstance(extracted, dict):
+            extracted = {'problems': [], 'solutions': []}
+        
+    except Exception as e:
+        print(f"[ERROR] Failed to extract solutions: {e}")
+        extracted = {'problems': [], 'solutions': []}
+    
+    response_parts = []
+    response_parts.append("## 🔧 วิธีแก้ไขปัญหา\n")
+    
+    problems = extracted.get('problems', [])
+    if problems:
+        response_parts.append("**ปัญหาที่พบบ่อย:**")
+        for i, prob in enumerate(problems[:3], 1):
+            clean_prob = clean_text_formatting(prob)
+            if len(clean_prob) > 10:
+                response_parts.append(f"  {i}. {clean_prob}")
+        response_parts.append("")
+    
+    solutions = extracted.get('solutions', [])
+    if solutions:
+        response_parts.append("**วิธีแก้ไขเบื้องต้น:**")
+        
+        grouped_solutions = []
+        used_indices = set()
+        
+        for i, sol in enumerate(solutions):
+            if i in used_indices:
+                continue
+                
+            similar = [sol]
+            for j, other_sol in enumerate(solutions):
+                if i != j and j not in used_indices:
+                    sol_words = set(sol.lower().split())
+                    other_words = set(other_sol.lower().split())
+                    if len(sol_words) > 0 and len(other_words) > 0:
+                        overlap = len(sol_words & other_words) / max(len(sol_words), len(other_words))
+                        
+                        if overlap > 0.6:
+                            similar.append(other_sol)
+                            used_indices.add(j)
+            
+            best_solution = min(similar, key=len)
+            grouped_solutions.append(best_solution)
+            used_indices.add(i)
+        
+        for i, sol in enumerate(grouped_solutions[:8], 1):
+            response_parts.append(f"  {i}. {sol}")
+        
+        response_parts.append("")
+        
+    else:
+        response_parts.append("**คำแนะนำทั่วไป:**")
+        response_parts.append("  • ตรวจสอบการเชื่อมต่อและสายเคเบิล")
+        response_parts.append("  • ลองรีสตาร์ทอุปกรณ์")
+        response_parts.append("  • อัปเดต drivers และ software ให้เป็นเวอร์ชันล่าสุด")
+        response_parts.append("  • ตรวจสอบ error logs หรือข้อความแสดงข้อผิดพลาด")
+        response_parts.append("")
+    
+    response_parts.append("**Tickets ที่เกี่ยวข้อง:**")
+    shown_tickets = 0
+    for doc in docs[:10]:
+        subject = clean_text_formatting(doc.metadata.get('subject', ''))
+        if subject and len(subject) > 10 and shown_tickets < 5:
+            shown_tickets += 1
+            response_parts.append(f"  {shown_tickets}. {subject}")
+    
+    response_parts.append("\n💡 **หมายเหตุ:** หากวิธีแก้ไขข้างต้นไม่ได้ผล กรุณาติดต่อทีม IT Support")
+    
+    return "\n".join(response_parts)
 
 def retrieve_tickets(question: str) -> List[Document]:
-    """
-    ค้นหา support tickets ด้วยวิธีที่ดีขึ้น
-    - เพิ่มจำนวนผลลัพธ์
-    - ค้นหาทั้ง subject และ content
-    """
+    """ค้นหา support tickets"""
     print(f"\n{'='*70}")
     print(f"[TICKET RETRIEVE] Starting ticket search")
     print(f"Question: {question}")
     print(f"{'='*70}")
     
     try:
-        # ค้นหาด้วย semantic search (เพิ่มจาก 10 เป็น 20)
         semantic_docs = get_vectorstore().similarity_search(
             question,
-            k=20,  # เพิ่มจำนวน
+            k=30,
             filter={"source": "support_tickets"}
         )
         
-        print(f"[TICKET RETRIEVE] Found {len(semantic_docs)} tickets from semantic search")
+        print(f"[TICKET RETRIEVE] Found {len(semantic_docs)} tickets")
         
-        # แสดง debug info
         if semantic_docs:
             print("\n[TICKET RETRIEVE] Top 5 results:")
             for i, doc in enumerate(semantic_docs[:5], 1):
@@ -555,12 +754,10 @@ def retrieve_tickets(question: str) -> List[Document]:
         
     except Exception as e:
         print(f"[ERROR] Ticket retrieval failed: {e}")
-        import traceback
-        traceback.print_exc()
         return []
 
 # ============================================================================
-# PROMPT TEMPLATES (เดิม - ไม่แก้)
+# PROMPT TEMPLATES
 # ============================================================================
 
 IT_ASSET_PROMPT = ChatPromptTemplate.from_template("""
@@ -594,21 +791,21 @@ ANSWER (show Serial Number for every item):
 """)
 
 SUPPORT_TICKET_PROMPT = ChatPromptTemplate.from_template("""
-You are an IT Support Assistant for handling support tickets.
+You are an IT Support Expert providing solutions to technical problems.
 Answer in the SAME LANGUAGE as the question (Thai or English).
 
-## Retrieved Tickets:
+## Retrieved Support Tickets:
 {context}
 
 ## User Question:
 {question}
 
 ## Instructions:
-1. Read ticket information carefully
-2. Summarize the most relevant tickets
-3. Show: Subject, Type, Queue, Priority, Tags
-4. If multiple tickets match, list them briefly
-5. Answer in a helpful, professional tone
+1. Focus on SOLUTIONS, not just problem descriptions
+2. Extract and present ONLY the troubleshooting steps and fixes from the tickets
+3. Format your answer with clear steps
+4. Use actionable language
+5. If multiple tickets have similar problems, combine their solutions
 
 Answer:
 """)
@@ -623,11 +820,11 @@ Give a helpful, professional response:
 """)
 
 # ============================================================================
-# CONTEXT FORMATTING (เดิม - ไม่แก้)
+# CONTEXT FORMATTING
 # ============================================================================
 
 def format_inventory_context(docs: List[Document], max_docs: int = 3) -> str:
-    """Format inventory documents เป็น context ที่อ่านง่าย"""
+    """Format inventory documents"""
     if not docs:
         return "ไม่พบข้อมูลในระบบ"
     
@@ -660,65 +857,10 @@ def format_inventory_context(docs: List[Document], max_docs: int = 3) -> str:
         lines.append("")
     
     result = "\n".join(lines)
-    print(f"[CONTEXT DEBUG]\n{result}")
     return result
 
-def clean_text_formatting(text: str) -> str:
-    """
-    ทำความสะอาด text โดยลบ HTML tags, underscores, formatting characters และอักขระแปลกปลอม
-    """
-    if not text:
-        return ""
-    
-    import html
-    import unicodedata
-    
-    # Decode HTML entities (เช่น &amp; → &)
-    text = html.unescape(text)
-    
-    # ลบ HTML tags
-    text = re.sub(r'<[^>]+>', '', text)
-    
-    # ลบ underscores ที่ใช้สำหรับ formatting (underline)
-    text = re.sub(r'_{2,}', ' ', text)  # ลบ __ หรือ ___ เป็นต้นไป
-    
-    # ลบ markdown formatting
-    text = re.sub(r'\*\*([^*]+)\*\*', r'\1', text)  # **bold** → bold
-    text = re.sub(r'\*([^*]+)\*', r'\1', text)      # *italic* → italic
-    text = re.sub(r'__([^_]+)__', r'\1', text)      # __underline__ → underline
-    
-    # ✅ ลบอักขระที่ไม่ใช่ภาษาไทย อังกฤษ ตัวเลข และเครื่องหมายพื้นฐาน
-    # Keep: Thai (0E00-0E7F), English (0000-007F), digits, common punctuation
-    allowed_chars = []
-    for char in text:
-        # Check if character is in allowed ranges
-        code_point = ord(char)
-        
-        # Thai characters (U+0E00 to U+0E7F)
-        # Basic Latin (U+0000 to U+007F) - English, numbers, punctuation
-        # General Punctuation (U+2000 to U+206F)
-        # Spaces and common symbols
-        if (0x0E00 <= code_point <= 0x0E7F or  # Thai
-            0x0020 <= code_point <= 0x007E or  # Basic Latin (printable)
-            code_point in [0x000A, 0x000D] or  # Line breaks
-            0x2000 <= code_point <= 0x206F):   # Punctuation
-            allowed_chars.append(char)
-        else:
-            # แทนที่อักขระแปลกด้วยช่องว่าง
-            allowed_chars.append(' ')
-    
-    text = ''.join(allowed_chars)
-    
-    # ลบช่องว่างซ้ำซ้อน
-    text = re.sub(r'\s+', ' ', text)
-    
-    # ลบช่องว่างหน้าหลัง
-    text = text.strip()
-    
-    return text
-
-def format_ticket_context(docs: List[Document], max_docs: int = 5) -> str:
-    """Format support ticket documents (with cleaned text)"""
+def format_ticket_context(docs: List[Document], max_docs: int = 10) -> str:
+    """Format support ticket documents"""
     if not docs:
         return "ไม่พบ ticket ในระบบ"
     
@@ -730,7 +872,6 @@ def format_ticket_context(docs: List[Document], max_docs: int = 5) -> str:
         
         lines.append(f"\n--- Ticket #{i} ---")
         
-        # ✅ ทำความสะอาด subject
         subject = clean_text_formatting(meta.get('subject', 'N/A'))
         lines.append(f"Subject: {subject}")
         
@@ -739,16 +880,15 @@ def format_ticket_context(docs: List[Document], max_docs: int = 5) -> str:
         lines.append(f"Priority: {meta.get('priority', 'N/A')}")
         lines.append(f"Tags: {meta.get('tags', 'N/A')}")
         
-        # ✅ ทำความสะอาด content
-        content_preview = clean_text_formatting(doc.page_content[:300]) if doc.page_content else ""
-        if len(doc.page_content) > 300:
+        content_preview = clean_text_formatting(doc.page_content[:500]) if doc.page_content else ""
+        if len(doc.page_content) > 500:
             content_preview += "..."
         lines.append(f"Details:\n{content_preview}")
     
     return "\n".join(lines)
 
 # ============================================================================
-# CHAT HISTORY MANAGEMENT
+# CHAT HISTORY
 # ============================================================================
 
 @lru_cache(maxsize=10)
@@ -759,7 +899,7 @@ def get_session_history(session_id: str):
     )
 
 # ============================================================================
-# MAIN CHAT FUNCTION (ปรับเฉพาะส่วน ticket)
+# MAIN CHAT FUNCTION
 # ============================================================================
 
 def chat_with_warehouse_system(
@@ -767,7 +907,7 @@ def chat_with_warehouse_system(
     question: str,
     image: bytes | None = None
 ) -> Generator[str, None, None]:
-    """Main chat function with improved ticket handling"""
+    """Main chat function"""
     
     print("\n" + "="*70)
     print(f"[CHAT START] Session: {session_id}")
@@ -777,20 +917,15 @@ def chat_with_warehouse_system(
     try:
         llm = get_llm()
         history = get_session_history(session_id)
-        current_date = datetime.now().strftime("%Y-%m-%d")
         
         intent = classify_intent(question)
         print(f"\n[INTENT] {intent}")
         
-        # ============================================================
-        # INVENTORY QUERIES (เดิม - ไม่แก้)
-        # ============================================================
         if intent == "inventory":
             print("[CHAT] Processing as INVENTORY query")
             docs = hybrid_retrieve(question)
             
             if not docs:
-                print("[CHAT] No documents found")
                 yield "🔍 ไม่พบข้อมูลในระบบ\n\n"
                 yield "💡 ลองตรวจสอบ:\n"
                 yield "• Serial Number ถูกต้องหรือไม่\n"
@@ -798,10 +933,6 @@ def chat_with_warehouse_system(
                 return
             
             total_docs = len(docs)
-            print(f"[CHAT] Total documents: {total_docs}")
-            
-            display_limit = total_docs
-            print(f"[CHAT] Will display: {display_limit} items")
             
             if total_docs == 1:
                 header = "พบข้อมูล 1 รายการ:\n\n"
@@ -809,137 +940,113 @@ def chat_with_warehouse_system(
                 header = f"พบข้อมูล {total_docs} รายการ:\n\n"
             
             yield header
-            print(f"[CHAT] ✓ Sent header")
             
             full_response_parts = [header]
             
-            for i, doc in enumerate(docs[:display_limit], 1):
+            for i, doc in enumerate(docs, 1):
                 meta = doc.metadata
-                print(f"[CHAT] Processing item {i}/{display_limit}")
-                print(f"[CHAT] Metadata: {meta}")
                 
-                # ✅ Header ที่สวยขึ้น
-                item_header = f"{'='*3}\n"
-                item_header += f"รายการที่ {i}:\n"
-                item_header += f"{'='*3}\n"
+                item_header = f"{'='*3}\nรายการที่ {i}:\n{'='*3}\n"
                 yield item_header
                 full_response_parts.append(item_header)
-                print(f"[CHAT] ✓ Sent item {i} header")
                 
-                # Model
                 model = meta.get('model', 'N/A')
                 model_line = f"• Model: {model}\n"
                 yield model_line
                 full_response_parts.append(model_line)
-                print(f"[CHAT] ✓ Sent model: {model}")
                 
-                # Model No
                 model_no = meta.get('model_no', '')
                 if model_no and model_no.strip() and model_no != 'N/A':
                     model_no_line = f"• Model No: {model_no}\n"
                     yield model_no_line
                     full_response_parts.append(model_no_line)
-                    print(f"[CHAT] ✓ Sent model_no: {model_no}")
                 
-                # Serial Number
                 serial = meta.get('serial', '')
                 if serial and serial.strip() and serial != 'N/A':
                     serial_line = f"• Serial Number: {serial}\n"
                     yield serial_line
                     full_response_parts.append(serial_line)
-                    print(f"[CHAT] ✓ Sent serial: {serial}")
                 else:
                     no_serial_line = f"• Serial Number: ไม่มีข้อมูล\n"
                     yield no_serial_line
                     full_response_parts.append(no_serial_line)
-                    print(f"[CHAT] ✓ Sent: ไม่มี serial")
                 
-                # Asset Number
                 asset_no = meta.get('asset_no', '')
                 if asset_no and asset_no.strip() and asset_no != 'N/A':
                     asset_line = f"• Asset Number: {asset_no}\n"
                     yield asset_line
                     full_response_parts.append(asset_line)
-                    print(f"[CHAT] ✓ Sent asset: {asset_no}")
                 
-                # Status
                 status = meta.get('status', '')
                 if status and status.strip() and status != 'N/A':
                     status_line = f"• Status: {status}\n"
                     yield status_line
                     full_response_parts.append(status_line)
-                    print(f"[CHAT] ✓ Sent status: {status}")
                 
-                # Location
                 location = meta.get('location', '')
                 if location and location.strip() and location != 'N/A':
                     location_line = f"• Location: {location}\n"
                     yield location_line
                     full_response_parts.append(location_line)
-                    print(f"[CHAT] ✓ Sent location: {location}")
                 
-                # ✅ เพิ่มช่องว่างระหว่างรายการ (2 บรรทัด)
                 separator = "\n\n"
                 yield separator
                 full_response_parts.append(separator)
-                print(f"[CHAT] ✓ Sent item {i} separator")
             
             full_response = "".join(full_response_parts)
             history.add_user_message(question)
             history.add_ai_message(full_response)
-            
-            print(f"[CHAT] ✅ Response complete: displayed {display_limit}/{total_docs} items")
             return
         
-        # ============================================================
-        # TICKET QUERIES (ปรับปรุงใหม่)
-        # ============================================================
         elif intent == "ticket":
             print("[CHAT] Processing as TICKET query")
             
-            # ใช้ฟังก์ชันใหม่ที่ปรับปรุงแล้ว
             ticket_docs = retrieve_tickets(question)
             
             if not ticket_docs:
-                print("[CHAT] No tickets found")
                 yield "🔍 ไม่พบ Support Tickets ที่เกี่ยวข้อง\n\n"
                 yield "💡 ลองถามคำถามแบบนี้:\n"
                 yield "• 'มีปัญหาเกี่ยวกับ VPN บ้างไหม'\n"
                 yield "• 'ticket เกี่ยวกับ network มีอะไรบ้าง'\n"
                 yield "• 'แก้ปัญหา login ยังไง'\n"
-                yield "• 'วิธีติดตั้ง software'\n"
-                yield "• 'ปัญหา printer มีอะไรบ้าง'\n"
                 return
 
-            # สร้าง context (เพิ่มจาก 5 เป็น 10)
-            context = format_ticket_context(ticket_docs, max_docs=10)
-            print(f"[CHAT] Ticket context prepared")
+            print(f"[CHAT] Ticket response mode: {TICKET_RESPONSE_MODE}")
             
-            # ส่งไป LLM
-            chain = (
-                {
-                    "context": lambda _: context,
-                    "question": RunnablePassthrough()
-                }
-                | SUPPORT_TICKET_PROMPT
-                | llm
-            )
+            if TICKET_RESPONSE_MODE == "rule":
+                print("[CHAT] Using RULE-based solution extraction")
+                response = format_solution_response(question, ticket_docs)
+                
+                for char in response:
+                    yield char
+                
+                history.add_user_message(question)
+                history.add_ai_message(response)
+                
+            else:
+                print("[CHAT] Using LLM-based response")
+                context = format_ticket_context(ticket_docs, max_docs=10)
+                
+                chain = (
+                    {
+                        "context": lambda _: context,
+                        "question": RunnablePassthrough()
+                    }
+                    | SUPPORT_TICKET_PROMPT
+                    | llm
+                )
+                
+                full_response = ""
+                for chunk in chain.stream(question):
+                    content = getattr(chunk, "content", str(chunk))
+                    full_response += content
+                    yield content
+                
+                history.add_user_message(question)
+                history.add_ai_message(full_response)
             
-            print("[CHAT] Starting LLM stream for tickets...")
-            full_response = ""
-            for chunk in chain.stream(question):
-                content = getattr(chunk, "content", str(chunk))
-                full_response += content
-                yield content
-            
-            history.add_user_message(question)
-            history.add_ai_message(full_response)
-            print(f"[CHAT] ✅ Ticket response complete")
             return
         
-        # ============================================================
-        # GENERAL QUERIES (เดิม - ไม่แก้)
-        # ============================================================
         else:
             print("[CHAT] Processing as GENERAL query")
             chain = (
