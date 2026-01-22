@@ -118,7 +118,7 @@ def get_db_connection():
         raise
 
 # ============================================================================
-# KEYWORD EXTRACTION
+# KEYWORD EXTRACTION (เดิม - ไม่แก้)
 # ============================================================================
 
 def extract_search_patterns(question: str) -> dict:
@@ -145,12 +145,12 @@ def extract_search_patterns(question: str) -> dict:
     model_nos = re.findall(r'\b[A-Z]{2,}-[A-Z0-9-]+\b', question.upper())
     patterns["model_nos"].extend(model_nos)
     
-    # ✅ ตรวจจับ Specific Model ด้วย patterns ที่แม่นยำขึ้น
+    # ✅ ตรวจจับ Specific Model
     specific_model_patterns = [
-        r'\b(FR-\d+)\b',  # เช่น FR-4080
-        r'\b(2930F)\b',  # HP Switch 2930F
+        r'\b(FR-\d+)\b',
+        r'\b(2930F)\b',
         r'\b(2930M)\b',
-        r'\b(JL\d+[A-Z])\b',  # Model No เช่น JL693A
+        r'\b(JL\d+[A-Z])\b',
         r'\b(YOGA\s+\S+)',
         r'\b(THINKPAD\s+\S+)',
         r'\b(THINKCENTRE\s+\S+)',
@@ -158,7 +158,7 @@ def extract_search_patterns(question: str) -> dict:
         r'\b(OPTIPLEX\s+\S+)',
         r'\b(MACBOOK\s+\S+)',
         r'\b(HP\s+\S+\s+\S+)',
-        r'\b([A-Z]+\d+[A-Z]*\s*\d*[A-Z]*)',  # เช่น TC26BK, JL693A
+        r'\b([A-Z]+\d+[A-Z]*\s*\d*[A-Z]*)',
     ]
     
     for pattern in specific_model_patterns:
@@ -168,9 +168,9 @@ def extract_search_patterns(question: str) -> dict:
             print(f"[PATTERN MATCH] Detected specific model: {patterns['specific_model']}")
             break
     
-    # Model keywords (ทั่วไป)
+    # Model keywords
     model_keywords = [
-        "fr-4080", "2930f", "2930m",  # HP Switch models
+        "fr-4080", "2930f", "2930m",
         "thinkpad", "thinkcentre", "thinkstation", 
         "switch", "router", "printer", "beacon",
         "gateway", "access point", "ups",
@@ -208,7 +208,7 @@ def extract_search_patterns(question: str) -> dict:
     return patterns
 
 # ============================================================================
-# HYBRID RETRIEVAL SYSTEM
+# HYBRID RETRIEVAL SYSTEM (เดิม - ไม่แก้)
 # ============================================================================
 
 def keyword_search_direct(patterns: dict) -> List[Document]:
@@ -219,10 +219,9 @@ def keyword_search_direct(patterns: dict) -> List[Document]:
         conn = get_db_connection()
         cursor = conn.cursor()
         
-        # ✅ เพิ่ม filter: เฉพาะ source = 'inventory'
         base_filter = "AND cmetadata->>'source' = 'inventory'"
         
-        # ✅ ค้นหาด้วย Specific Model (สำคัญที่สุด) - เพิ่มเป็น LIMIT 100
+        # Specific Model
         if patterns.get("specific_model"):
             specific_model = patterns["specific_model"]
             print(f"[SQL SEARCH] Specific Model: {specific_model}")
@@ -239,7 +238,7 @@ def keyword_search_direct(patterns: dict) -> List[Document]:
             for doc_content, metadata in rows:
                 all_docs.append(Document(page_content=doc_content, metadata=metadata or {}))
         
-        # ค้นหาด้วย Serial Number
+        # Serial Number
         for serial in patterns["serials"]:
             print(f"[SQL SEARCH] Serial: {serial}")
             query = f"""
@@ -255,7 +254,7 @@ def keyword_search_direct(patterns: dict) -> List[Document]:
             for doc_content, metadata in rows:
                 all_docs.append(Document(page_content=doc_content, metadata=metadata or {}))
         
-        # ค้นหาด้วย Asset Number
+        # Asset Number
         for asset in patterns["assets"]:
             print(f"[SQL SEARCH] Asset: {asset}")
             query = f"""
@@ -271,7 +270,7 @@ def keyword_search_direct(patterns: dict) -> List[Document]:
             for doc_content, metadata in rows:
                 all_docs.append(Document(page_content=doc_content, metadata=metadata or {}))
         
-        # ค้นหาด้วย Model No
+        # Model No
         for model_no in patterns["model_nos"]:
             print(f"[SQL SEARCH] Model No: {model_no}")
             query = f"""
@@ -287,7 +286,7 @@ def keyword_search_direct(patterns: dict) -> List[Document]:
             for doc_content, metadata in rows:
                 all_docs.append(Document(page_content=doc_content, metadata=metadata or {}))
         
-        # ค้นหาด้วย Location
+        # Location
         for loc in patterns["locations"]:
             print(f"[SQL SEARCH] Location: {loc}")
             query = f"""
@@ -324,20 +323,18 @@ def hybrid_retrieve(question: str) -> List[Document]:
     keyword_docs = keyword_search_direct(patterns)
     print(f"[STEP 1 RESULT] Found {len(keyword_docs)} docs from keyword search (before dedup)")
     
-    # ลบ duplicate โดยใช้ serial number เป็น unique key
+    # ลบ duplicate
     seen_serials = set()
     unique_keyword_docs = []
     for doc in keyword_docs:
         serial = (doc.metadata.get('serial') or '').strip().upper()
         asset = (doc.metadata.get('asset_no') or '').strip()
         
-        # ถ้ามี serial ใช้ serial เป็น key, ถ้าไม่มีใช้ asset
         if serial:
             unique_key = f"serial_{serial}"
         elif asset:
             unique_key = f"asset_{asset}"
         else:
-            # ถ้าไม่มีทั้งสองใช้ row + model
             unique_key = f"row_{doc.metadata.get('row', '')}_{doc.metadata.get('model', '')}"
         
         if unique_key not in seen_serials:
@@ -350,7 +347,7 @@ def hybrid_retrieve(question: str) -> List[Document]:
     keyword_docs = unique_keyword_docs
     print(f"[STEP 1 RESULT] After dedup: {len(keyword_docs)} unique docs")
     
-    # ✅ ถ้าเจอ exact match จาก Serial -> return เฉพาะตัวนั้น
+    # Exact match สำหรับ Serial
     if patterns["serials"]:
         exact_serial = patterns["serials"][0].upper()
         exact_matches = [d for d in keyword_docs if (d.metadata.get('serial') or '').upper() == exact_serial]
@@ -360,7 +357,7 @@ def hybrid_retrieve(question: str) -> List[Document]:
             print(f"{'='*70}\n")
             return exact_matches
     
-    # ✅ ถ้าเจอ exact match จาก Asset -> return เฉพาะตัวนั้น
+    # Exact match สำหรับ Asset
     if patterns["assets"]:
         exact_asset = patterns["assets"][0]
         exact_matches = [d for d in keyword_docs if (d.metadata.get('asset_no') or '') == exact_asset]
@@ -370,7 +367,7 @@ def hybrid_retrieve(question: str) -> List[Document]:
             print(f"{'='*70}\n")
             return exact_matches
     
-    # ✅ ถ้าถาม Specific Model -> return ทั้งหมดจาก keyword_docs
+    # Specific Model
     if patterns["specific_model"]:
         specific_model = patterns["specific_model"].upper()
         print(f"\n[STEP 2] Specific Model Search: {specific_model}")
@@ -379,7 +376,7 @@ def hybrid_retrieve(question: str) -> List[Document]:
             print(f"[STEP 2 RESULT] Found {len(keyword_docs)} matches")
             print(f"[RETURN] {len(keyword_docs)} document(s)")
             print(f"{'='*70}\n")
-            return keyword_docs  # return ทั้งหมด (สูงสุด 100 จาก LIMIT)
+            return keyword_docs
         else:
             print(f"[STEP 2] No matches found for {specific_model}")
             print(f"{'='*70}\n")
@@ -395,7 +392,6 @@ def hybrid_retrieve(question: str) -> List[Document]:
     # 3. Semantic Search (เฉพาะ inventory)
     print(f"\n[STEP 4] Semantic Search (fallback)")
     try:
-        # ✅ เพิ่ม filter เฉพาะ inventory
         semantic_docs = get_vectorstore().as_retriever(
             search_type="similarity",
             search_kwargs={
@@ -405,7 +401,6 @@ def hybrid_retrieve(question: str) -> List[Document]:
         ).invoke(question)
         print(f"[STEP 4 RESULT] Found {len(semantic_docs)} docs from semantic search")
         
-        # Filter ถ้ามี specific_model
         if patterns["specific_model"]:
             specific_model = patterns["specific_model"].upper()
             before_filter = len(semantic_docs)
@@ -442,7 +437,130 @@ def hybrid_retrieve(question: str) -> List[Document]:
     return unique_docs[:10]
 
 # ============================================================================
-# PROMPT TEMPLATES
+# IMPROVED INTENT CLASSIFICATION (ปรับเฉพาะ ticket)
+# ============================================================================
+
+def classify_intent(question: str) -> str:
+    """แยกว่าเป็นคำถามเกี่ยวกับ inventory, ticket, หรือ general"""
+    q_lower = question.lower()
+    
+    # ============================================================
+    # INVENTORY KEYWORDS (เดิม - ไม่แก้)
+    # ============================================================
+    inventory_keywords = [
+        "serial", "s/n", "sn", "asset", "model", "รุ่น", "เครื่อง", "อุปกรณ์",
+        "มี", "เหลือ", "กี่", "จำนวน", "spare", "obsolete", "ค้นหา", "หา",
+        "thinkpad", "laptop", "switch", "router", "printer", "computer",
+        "location", "ตำแหน่ง", "อยู่ที่", "sriracha", "ศรีราชา",
+        "model no", "asset no", "serial number", "2930f", "2930m", "fr-4080"
+    ]
+    
+    # ============================================================
+    # IMPROVED TICKET KEYWORDS (ปรับปรุงใหม่)
+    # ============================================================
+    ticket_keywords = [
+        # คำหลัก
+        "ticket", "support", "issue", "problem", "ปัญหา", "คำถาม",
+        "help", "assist", "request", "เคส", "แจ้ง", "bug", "error",
+        
+        # คำถามแบบ how-to
+        "ทำยังไง", "วิธี", "how to", "how do", "how can", "ขั้นตอน",
+        
+        # คำที่บ่งบอกว่าเป็นปัญหา
+        "แก้", "fix", "solve", "แก้ไข", "รีเซ็ต", "reset",
+        "ไม่ทำงาน", "not working", "broken", "เสีย", "ไม่ได้",
+        
+        # Technical issues
+        "vpn", "network", "connection", "password", "login", "เข้าสู่ระบบ",
+        "install", "ติดตั้ง", "configure", "setup", "เชื่อมต่อ",
+        "email", "อีเมล", "security", "ความปลอดภัย",
+        
+        # Priority/Queue related
+        "urgent", "ด่วน", "priority", "สำคัญ", "high", "สูง",
+        
+        # Tags ที่มักเจอใน ticket
+        "audio", "video", "เสียง", "ภาพ", "performance", "ประสิทธิภาพ",
+        "compatibility", "เข้ากันได้", "automation", "อัตโนมัติ",
+        
+        # Support-specific
+        "technical support", "it support", "ซัพพอร์ต", "helpdesk"
+    ]
+    
+    # Check for serial/asset patterns (แน่นอนว่าเป็น inventory)
+    if re.search(r'\b[A-Z0-9]{6,20}\b', question.upper()):
+        return "inventory"
+    
+    # Count keyword matches
+    inventory_score = sum(1 for k in inventory_keywords if k in q_lower)
+    ticket_score = sum(1 for k in ticket_keywords if k in q_lower)
+    
+    print(f"[INTENT] Scores - Inventory: {inventory_score}, Ticket: {ticket_score}")
+    
+    # ถ้า ticket score สูงกว่าอย่างชัดเจน
+    if ticket_score > inventory_score and ticket_score >= 2:
+        print(f"[INTENT] Classified as: ticket")
+        return "ticket"
+    
+    # ถ้า inventory score สูงกว่า
+    if inventory_score > ticket_score:
+        print(f"[INTENT] Classified as: inventory")
+        return "inventory"
+    
+    # ถ้ามี ticket keyword อย่างน้อย 1 ตัว
+    if ticket_score > 0:
+        print(f"[INTENT] Classified as: ticket (has keywords)")
+        return "ticket"
+    
+    # Default
+    print(f"[INTENT] Classified as: general")
+    return "general"
+
+# ============================================================================
+# ✨ NEW: IMPROVED TICKET RETRIEVAL
+# ============================================================================
+
+def retrieve_tickets(question: str) -> List[Document]:
+    """
+    ค้นหา support tickets ด้วยวิธีที่ดีขึ้น
+    - เพิ่มจำนวนผลลัพธ์
+    - ค้นหาทั้ง subject และ content
+    """
+    print(f"\n{'='*70}")
+    print(f"[TICKET RETRIEVE] Starting ticket search")
+    print(f"Question: {question}")
+    print(f"{'='*70}")
+    
+    try:
+        # ค้นหาด้วย semantic search (เพิ่มจาก 10 เป็น 20)
+        semantic_docs = get_vectorstore().similarity_search(
+            question,
+            k=20,  # เพิ่มจำนวน
+            filter={"source": "support_tickets"}
+        )
+        
+        print(f"[TICKET RETRIEVE] Found {len(semantic_docs)} tickets from semantic search")
+        
+        # แสดง debug info
+        if semantic_docs:
+            print("\n[TICKET RETRIEVE] Top 5 results:")
+            for i, doc in enumerate(semantic_docs[:5], 1):
+                subject = doc.metadata.get('subject', 'N/A')
+                typ = doc.metadata.get('type', 'N/A')
+                tags = doc.metadata.get('tags', 'N/A')
+                print(f"  {i}. Subject: {subject}")
+                print(f"     Type: {typ}, Tags: {tags}")
+        
+        print(f"{'='*70}\n")
+        return semantic_docs
+        
+    except Exception as e:
+        print(f"[ERROR] Ticket retrieval failed: {e}")
+        import traceback
+        traceback.print_exc()
+        return []
+
+# ============================================================================
+# PROMPT TEMPLATES (เดิม - ไม่แก้)
 # ============================================================================
 
 IT_ASSET_PROMPT = ChatPromptTemplate.from_template("""
@@ -505,7 +623,7 @@ Give a helpful, professional response:
 """)
 
 # ============================================================================
-# CONTEXT FORMATTING
+# CONTEXT FORMATTING (เดิม - ไม่แก้)
 # ============================================================================
 
 def format_inventory_context(docs: List[Document], max_docs: int = 3) -> str:
@@ -545,8 +663,62 @@ def format_inventory_context(docs: List[Document], max_docs: int = 3) -> str:
     print(f"[CONTEXT DEBUG]\n{result}")
     return result
 
+def clean_text_formatting(text: str) -> str:
+    """
+    ทำความสะอาด text โดยลบ HTML tags, underscores, formatting characters และอักขระแปลกปลอม
+    """
+    if not text:
+        return ""
+    
+    import html
+    import unicodedata
+    
+    # Decode HTML entities (เช่น &amp; → &)
+    text = html.unescape(text)
+    
+    # ลบ HTML tags
+    text = re.sub(r'<[^>]+>', '', text)
+    
+    # ลบ underscores ที่ใช้สำหรับ formatting (underline)
+    text = re.sub(r'_{2,}', ' ', text)  # ลบ __ หรือ ___ เป็นต้นไป
+    
+    # ลบ markdown formatting
+    text = re.sub(r'\*\*([^*]+)\*\*', r'\1', text)  # **bold** → bold
+    text = re.sub(r'\*([^*]+)\*', r'\1', text)      # *italic* → italic
+    text = re.sub(r'__([^_]+)__', r'\1', text)      # __underline__ → underline
+    
+    # ✅ ลบอักขระที่ไม่ใช่ภาษาไทย อังกฤษ ตัวเลข และเครื่องหมายพื้นฐาน
+    # Keep: Thai (0E00-0E7F), English (0000-007F), digits, common punctuation
+    allowed_chars = []
+    for char in text:
+        # Check if character is in allowed ranges
+        code_point = ord(char)
+        
+        # Thai characters (U+0E00 to U+0E7F)
+        # Basic Latin (U+0000 to U+007F) - English, numbers, punctuation
+        # General Punctuation (U+2000 to U+206F)
+        # Spaces and common symbols
+        if (0x0E00 <= code_point <= 0x0E7F or  # Thai
+            0x0020 <= code_point <= 0x007E or  # Basic Latin (printable)
+            code_point in [0x000A, 0x000D] or  # Line breaks
+            0x2000 <= code_point <= 0x206F):   # Punctuation
+            allowed_chars.append(char)
+        else:
+            # แทนที่อักขระแปลกด้วยช่องว่าง
+            allowed_chars.append(' ')
+    
+    text = ''.join(allowed_chars)
+    
+    # ลบช่องว่างซ้ำซ้อน
+    text = re.sub(r'\s+', ' ', text)
+    
+    # ลบช่องว่างหน้าหลัง
+    text = text.strip()
+    
+    return text
+
 def format_ticket_context(docs: List[Document], max_docs: int = 5) -> str:
-    """Format support ticket documents"""
+    """Format support ticket documents (with cleaned text)"""
     if not docs:
         return "ไม่พบ ticket ในระบบ"
     
@@ -557,14 +729,19 @@ def format_ticket_context(docs: List[Document], max_docs: int = 5) -> str:
         meta = doc.metadata
         
         lines.append(f"\n--- Ticket #{i} ---")
-        lines.append(f"Subject: {meta.get('subject', 'N/A')}")
+        
+        # ✅ ทำความสะอาด subject
+        subject = clean_text_formatting(meta.get('subject', 'N/A'))
+        lines.append(f"Subject: {subject}")
+        
         lines.append(f"Type: {meta.get('type', 'N/A')}")
         lines.append(f"Queue: {meta.get('queue', 'N/A')}")
         lines.append(f"Priority: {meta.get('priority', 'N/A')}")
         lines.append(f"Tags: {meta.get('tags', 'N/A')}")
         
-        content_preview = doc.page_content[:200] if doc.page_content else ""
-        if len(doc.page_content) > 200:
+        # ✅ ทำความสะอาด content
+        content_preview = clean_text_formatting(doc.page_content[:300]) if doc.page_content else ""
+        if len(doc.page_content) > 300:
             content_preview += "..."
         lines.append(f"Details:\n{content_preview}")
     
@@ -582,46 +759,7 @@ def get_session_history(session_id: str):
     )
 
 # ============================================================================
-# INTENT CLASSIFICATION
-# ============================================================================
-
-def classify_intent(question: str) -> str:
-    """แยกว่าเป็นคำถามเกี่ยวกับ inventory, ticket, หรือ general"""
-    q_lower = question.lower()
-    
-    # Inventory keywords
-    inventory_keywords = [
-        "serial", "s/n", "sn", "asset", "model", "รุ่น", "เครื่อง", "อุปกรณ์",
-        "มี", "เหลือ", "กี่", "จำนวน", "spare", "obsolete", "ค้นหา", "หา",
-        "thinkpad", "laptop", "switch", "router", "printer", "computer",
-        "location", "ตำแหน่ง", "อยู่ที่", "sriracha", "ศรีราชา",
-        "model no", "asset no", "serial number", "2930f", "2930m", "fr-4080"
-    ]
-    
-    # Ticket keywords
-    ticket_keywords = [
-        "ticket", "support", "issue", "problem", "ปัญหา", "คำถาม",
-        "help", "assist", "request", "เคส", "แจ้ง", "bug", "error",
-        "technical", "queue", "priority", "tag"
-    ]
-    
-    # Check for serial/asset patterns
-    if re.search(r'\b[A-Z0-9]{6,20}\b', question.upper()):
-        return "inventory"
-    
-    # Count keyword matches
-    inventory_score = sum(1 for k in inventory_keywords if k in q_lower)
-    ticket_score = sum(1 for k in ticket_keywords if k in q_lower)
-    
-    if inventory_score > ticket_score:
-        return "inventory"
-    elif ticket_score > 0:
-        return "ticket"
-    else:
-        return "general"
-
-# ============================================================================
-# MAIN CHAT FUNCTION
+# MAIN CHAT FUNCTION (ปรับเฉพาะส่วน ticket)
 # ============================================================================
 
 def chat_with_warehouse_system(
@@ -629,7 +767,7 @@ def chat_with_warehouse_system(
     question: str,
     image: bytes | None = None
 ) -> Generator[str, None, None]:
-    """Main chat function with improved retrieval and formatting"""
+    """Main chat function with improved ticket handling"""
     
     print("\n" + "="*70)
     print(f"[CHAT START] Session: {session_id}")
@@ -645,7 +783,7 @@ def chat_with_warehouse_system(
         print(f"\n[INTENT] {intent}")
         
         # ============================================================
-        # INVENTORY QUERIES
+        # INVENTORY QUERIES (เดิม - ไม่แก้)
         # ============================================================
         if intent == "inventory":
             print("[CHAT] Processing as INVENTORY query")
@@ -659,16 +797,12 @@ def chat_with_warehouse_system(
                 yield "• ค้นหาด้วย Model หรือ Asset Number แทน\n"
                 return
             
-            # สร้าง response
             total_docs = len(docs)
             print(f"[CHAT] Total documents: {total_docs}")
             
-            # แสดงทั้งหมด ไม่จำกัด
             display_limit = total_docs
-            
             print(f"[CHAT] Will display: {display_limit} items")
             
-            # Header
             if total_docs == 1:
                 header = "พบข้อมูล 1 รายการ:\n\n"
             else:
@@ -677,29 +811,29 @@ def chat_with_warehouse_system(
             yield header
             print(f"[CHAT] ✓ Sent header")
             
-            # เตรียมเก็บข้อมูลสำหรับ history
             full_response_parts = [header]
             
-            # แสดงแต่ละรายการ + เก็บไว้ใน history
             for i, doc in enumerate(docs[:display_limit], 1):
                 meta = doc.metadata
                 print(f"[CHAT] Processing item {i}/{display_limit}")
                 print(f"[CHAT] Metadata: {meta}")
                 
-                # สร้างข้อความของรายการนี้
-                item_header = f"📦 รายการที่ {i}:\n"
+                # ✅ Header ที่สวยขึ้น
+                item_header = f"{'='*3}\n"
+                item_header += f"รายการที่ {i}:\n"
+                item_header += f"{'='*3}\n"
                 yield item_header
                 full_response_parts.append(item_header)
                 print(f"[CHAT] ✓ Sent item {i} header")
                 
-                # Model (บังคับต้องมี)
+                # Model
                 model = meta.get('model', 'N/A')
                 model_line = f"• Model: {model}\n"
                 yield model_line
                 full_response_parts.append(model_line)
                 print(f"[CHAT] ✓ Sent model: {model}")
                 
-                # Model No (ถ้ามี)
+                # Model No
                 model_no = meta.get('model_no', '')
                 if model_no and model_no.strip() and model_no != 'N/A':
                     model_no_line = f"• Model No: {model_no}\n"
@@ -707,7 +841,7 @@ def chat_with_warehouse_system(
                     full_response_parts.append(model_no_line)
                     print(f"[CHAT] ✓ Sent model_no: {model_no}")
                 
-                # Serial Number (แสดงเสมอ)
+                # Serial Number
                 serial = meta.get('serial', '')
                 if serial and serial.strip() and serial != 'N/A':
                     serial_line = f"• Serial Number: {serial}\n"
@@ -720,7 +854,7 @@ def chat_with_warehouse_system(
                     full_response_parts.append(no_serial_line)
                     print(f"[CHAT] ✓ Sent: ไม่มี serial")
                 
-                # Asset Number (ถ้ามี)
+                # Asset Number
                 asset_no = meta.get('asset_no', '')
                 if asset_no and asset_no.strip() and asset_no != 'N/A':
                     asset_line = f"• Asset Number: {asset_no}\n"
@@ -728,7 +862,7 @@ def chat_with_warehouse_system(
                     full_response_parts.append(asset_line)
                     print(f"[CHAT] ✓ Sent asset: {asset_no}")
                 
-                # Status (ถ้ามี)
+                # Status
                 status = meta.get('status', '')
                 if status and status.strip() and status != 'N/A':
                     status_line = f"• Status: {status}\n"
@@ -736,7 +870,7 @@ def chat_with_warehouse_system(
                     full_response_parts.append(status_line)
                     print(f"[CHAT] ✓ Sent status: {status}")
                 
-                # Location (ถ้ามี)
+                # Location
                 location = meta.get('location', '')
                 if location and location.strip() and location != 'N/A':
                     location_line = f"• Location: {location}\n"
@@ -744,13 +878,12 @@ def chat_with_warehouse_system(
                     full_response_parts.append(location_line)
                     print(f"[CHAT] ✓ Sent location: {location}")
                 
-                # เว้นบรรทัด
-                separator = "\n"
+                # ✅ เพิ่มช่องว่างระหว่างรายการ (2 บรรทัด)
+                separator = "\n\n"
                 yield separator
                 full_response_parts.append(separator)
                 print(f"[CHAT] ✓ Sent item {i} separator")
             
-            # บันทึก history แบบเต็ม
             full_response = "".join(full_response_parts)
             history.add_user_message(question)
             history.add_ai_message(full_response)
@@ -759,26 +892,30 @@ def chat_with_warehouse_system(
             return
         
         # ============================================================
-        # TICKET QUERIES
+        # TICKET QUERIES (ปรับปรุงใหม่)
         # ============================================================
         elif intent == "ticket":
             print("[CHAT] Processing as TICKET query")
-            docs = hybrid_retrieve(question)
             
-            if not docs:
-                yield "🔍 ไม่พบ tickets ที่เกี่ยวข้อง\n"
-                return
-            
-            # Filter เฉพาะ tickets
-            ticket_docs = [d for d in docs if d.metadata.get('source') == 'support_tickets']
+            # ใช้ฟังก์ชันใหม่ที่ปรับปรุงแล้ว
+            ticket_docs = retrieve_tickets(question)
             
             if not ticket_docs:
-                yield "🔍 ไม่พบ tickets ที่เกี่ยวข้อง\n"
+                print("[CHAT] No tickets found")
+                yield "🔍 ไม่พบ Support Tickets ที่เกี่ยวข้อง\n\n"
+                yield "💡 ลองถามคำถามแบบนี้:\n"
+                yield "• 'มีปัญหาเกี่ยวกับ VPN บ้างไหม'\n"
+                yield "• 'ticket เกี่ยวกับ network มีอะไรบ้าง'\n"
+                yield "• 'แก้ปัญหา login ยังไง'\n"
+                yield "• 'วิธีติดตั้ง software'\n"
+                yield "• 'ปัญหา printer มีอะไรบ้าง'\n"
                 return
+
+            # สร้าง context (เพิ่มจาก 5 เป็น 10)
+            context = format_ticket_context(ticket_docs, max_docs=10)
+            print(f"[CHAT] Ticket context prepared")
             
-            context = format_ticket_context(ticket_docs)
-            print(f"[CHAT] Ticket context prepared, {len(ticket_docs)} tickets")
-            
+            # ส่งไป LLM
             chain = (
                 {
                     "context": lambda _: context,
@@ -788,7 +925,7 @@ def chat_with_warehouse_system(
                 | llm
             )
             
-            print("[CHAT] Starting LLM stream...")
+            print("[CHAT] Starting LLM stream for tickets...")
             full_response = ""
             for chunk in chain.stream(question):
                 content = getattr(chunk, "content", str(chunk))
@@ -797,10 +934,11 @@ def chat_with_warehouse_system(
             
             history.add_user_message(question)
             history.add_ai_message(full_response)
+            print(f"[CHAT] ✅ Ticket response complete")
             return
         
         # ============================================================
-        # GENERAL QUERIES
+        # GENERAL QUERIES (เดิม - ไม่แก้)
         # ============================================================
         else:
             print("[CHAT] Processing as GENERAL query")
