@@ -1,10 +1,11 @@
 # 8
-from typing import Generator, List
+from typing import Generator, List, Dict, Optional
 import os
 import re
 from dotenv import load_dotenv
 from functools import lru_cache
 from datetime import datetime
+from contextlib import contextmanager
 import psycopg2
 
 from langchain_ollama import ChatOllama, OllamaEmbeddings
@@ -20,6 +21,7 @@ load_dotenv()
 # CONFIGURATION SECTION
 # ============================================================================
 
+# Database Configuration
 PG_USER = os.getenv("PG_USER")
 PG_PASSWORD = os.getenv("PG_PASSWORD")
 PG_HOST = os.getenv("PG_HOST")
@@ -27,12 +29,15 @@ PG_PORT = os.getenv("PG_PORT")
 PG_DATABASE = os.getenv("PG_DATABASE")
 COLLECTION_NAME = os.getenv("COLLECTION_NAME")
 
+# LLM Configuration
 LLM_MODEL = os.getenv("LLM_MODEL", "qwen2.5:0.5b")
 EMBED_MODEL = os.getenv("EMBED_MODEL", "nomic-embed-text")
 OLLAMA_BASE_URL = "http://localhost:11434"
 
+# Response Mode
 TICKET_RESPONSE_MODE = os.getenv("TICKET_RESPONSE_MODE", "rule")
 
+# Connection Strings
 SQLALCHEMY_DB_URL = (
     f"postgresql+psycopg2://"
     f"{PG_USER}:{PG_PASSWORD}@{PG_HOST}:{PG_PORT}/{PG_DATABASE}"
@@ -46,6 +51,19 @@ PSYCOPG_CONN_INFO = (
     f"port={PG_PORT}"
 )
 
+# Search Configuration
+MAX_KEYWORD_RESULTS = 100
+MAX_EXACT_MATCHES = 3
+MAX_LOCATION_MATCHES = 5
+MAX_SEMANTIC_RESULTS = 10
+MAX_FINAL_RESULTS = 10
+
+# Text Cleaning Configuration
+MIN_SOLUTION_LENGTH = 15
+MAX_SOLUTION_LENGTH = 150
+MAX_SUBJECT_LENGTH = 100
+MIN_SUBJECT_LENGTH = 10
+
 # ============================================================================
 # GLOBAL VARIABLES
 # ============================================================================
@@ -57,10 +75,42 @@ _llm = None
 _db_conn = None
 
 # ============================================================================
+# DATABASE CONNECTION MANAGEMENT
+# ============================================================================
+
+def get_db_connection():
+    """Get or create database connection with singleton pattern"""
+    global _db_conn
+    try:
+        if _db_conn is None or _db_conn.closed:
+            print("[INIT] Connecting to database...")
+            _db_conn = psycopg2.connect(PSYCOPG_CONN_INFO)
+        return _db_conn
+    except Exception as e:
+        print(f"[ERROR] Database connection failed: {e}")
+        raise
+
+@contextmanager
+def get_db_cursor():
+    """Context manager for database cursor - prevents connection leaks"""
+    conn = get_db_connection()
+    cursor = conn.cursor()
+    try:
+        yield cursor
+        conn.commit()
+    except Exception as e:
+        conn.rollback()
+        print(f"[ERROR] Database operation failed: {e}")
+        raise e
+    finally:
+        cursor.close()
+
+# ============================================================================
 # INITIALIZATION FUNCTIONS
 # ============================================================================
 
 def get_embeddings():
+    """Initialize embeddings model"""
     global _embeddings
     if _embeddings is None:
         print("[INIT] Creating embeddings...")
@@ -71,6 +121,7 @@ def get_embeddings():
     return _embeddings
 
 def get_vectorstore():
+    """Initialize vector store"""
     global _vectorstore
     if _vectorstore is None:
         print("[INIT] Connecting to vectorstore...")
@@ -82,6 +133,7 @@ def get_vectorstore():
     return _vectorstore
 
 def get_retriever():
+    """Initialize retriever"""
     global _retriever
     if _retriever is None:
         print("[INIT] Creating retriever...")
@@ -93,45 +145,136 @@ def get_retriever():
     return _retriever
 
 def get_llm():
+    """Initialize LLM"""
     global _llm
     if _llm is None:
         print("[INIT] Connecting to LLM...")
         _llm = ChatOllama(
             model=LLM_MODEL,
             temperature=0.1,
-            stream=True,
+            stream=False,
             base_url=OLLAMA_BASE_URL,
-            num_ctx=4096,
-            num_predict=256,
+            num_ctx=2048,
+            num_predict=128,
             repeat_penalty=1.1,
             top_p=0.9,
             top_k=40
         )
     return _llm
 
-def get_db_connection():
-    global _db_conn
-    try:
-        if _db_conn is None or _db_conn.closed:
-            print("[INIT] Connecting to database...")
-            _db_conn = psycopg2.connect(PSYCOPG_CONN_INFO)
-        return _db_conn
-    except Exception as e:
-        print(f"[ERROR] Database connection failed: {e}")
-        raise
+# ============================================================================
+# UTILITY FUNCTIONS
+# ============================================================================
+
+def is_code_like(text: str) -> bool:
+    """
+    Detect if text is a model/serial/asset code
+    Examples: H2-PNCN, ThinkPad13, JL253A, 2930F
+    """
+    if not text:
+        return False
+
+    compact = re.sub(r'\s+', '', text.upper())
+
+    return bool(
+        re.fullmatch(r'[A-Z0-9\-]{4,}', compact) or
+        re.search(r'(THINKPAD|ELITEBOOK|OPTIPLEX)\d*', compact)
+    )
+
+def deduplicate_documents(docs: List[Document]) -> List[Document]:
+    """Remove duplicate documents based on unique identifiers"""
+    seen = set()
+    unique_docs = []
+    
+    for doc in docs:
+        serial = (doc.metadata.get('serial') or '').strip().upper()
+        asset = (doc.metadata.get('asset_no') or '').strip()
+        
+        # Create unique key
+        if serial:
+            unique_key = f"serial_{serial}"
+        elif asset:
+            unique_key = f"asset_{asset}"
+        else:
+            # Fallback to content-based key
+            unique_key = f"row_{doc.metadata.get('row', '')}_{doc.metadata.get('model', '')}"
+        
+        if unique_key not in seen:
+            seen.add(unique_key)
+            unique_docs.append(doc)
+    
+    return unique_docs
+
+def clean_text_formatting(text: str) -> str:
+    """Clean and normalize text formatting"""
+    if not text:
+        return ""
+    
+    import html
+    
+    # Unescape HTML entities
+    text = html.unescape(text)
+    
+    # Remove HTML tags
+    text = re.sub(r'<[^>]+>', '', text)
+    
+    # Remove markdown formatting
+    text = re.sub(r'_{2,}', ' ', text)
+    text = re.sub(r'\*\*([^*]+)\*\*', r'\1', text)
+    text = re.sub(r'\*([^*]+)\*', r'\1', text)
+    text = re.sub(r'__([^_]+)__', r'\1', text)
+    
+    # Filter allowed characters
+    allowed_chars = []
+    for char in text:
+        code_point = ord(char)
+        
+        if (0x0E00 <= code_point <= 0x0E7F or  # Thai
+            0x0020 <= code_point <= 0x007E or  # ASCII
+            code_point in [0x000A, 0x000D] or  # Newlines
+            0x2000 <= code_point <= 0x206F):   # Punctuation
+            allowed_chars.append(char)
+        else:
+            allowed_chars.append(' ')
+    
+    text = ''.join(allowed_chars)
+    
+    # Normalize whitespace
+    text = re.sub(r'\s+', ' ', text)
+    text = text.strip()
+    
+    return text
 
 # ============================================================================
 # INTENT CLASSIFICATION
 # ============================================================================
 
 def classify_intent(question: str) -> str:
-    """แยกประเภทคำถาม: inventory, ticket, หรือ general"""
+    """
+    Classify question intent into: inventory, ticket, or general
+    
+    Args:
+        question: User's question
+        
+    Returns:
+        Intent type: 'inventory', 'ticket', or 'general'
+    """
     q_lower = question.lower()
     
     print(f"\n[INTENT DEBUG] Analyzing: {question}")
     
-    # Strong ticket indicators
-    strong_ticket_indicators = [
+    # Rule 1: Hard inventory indicators
+    if re.search(r'(serial|serial number|sn|asset|asset number|ขอserial|ขอ serial)', q_lower):
+        print("[INTENT DEBUG] Hard rule: inventory (serial request)")
+        return "inventory"
+    
+    # Rule 2: Check if code-like (model/serial/asset)
+    if is_code_like(question):
+        print("[INTENT DEBUG] Code-like pattern detected: inventory")
+        return "inventory"
+    
+    # Rule 3: Strong ticket indicators
+    strong_ticket_patterns = [
         r'ทำ(อย่างไร|ยังไง|ไง)',
         r'วิธี(การ|แก้|ใช้)',
         r'(how to|how do|how can)',
@@ -145,68 +288,44 @@ def classify_intent(question: str) -> str:
         r'(เชื่อมต่อ|เข้าสู่ระบบ|ความปลอดภัย)',
     ]
     
-    for pattern in strong_ticket_indicators:
+    for pattern in strong_ticket_patterns:
         if re.search(pattern, q_lower):
-            print(f"[INTENT DEBUG] Matched strong ticket indicator: {pattern}")
+            print(f"[INTENT DEBUG] Matched ticket indicator: {pattern}")
             return "ticket"
     
-    # Serial Number patterns
-    serial_pattern = r'\b[A-Z0-9]{8,20}\b'
-    serial_matches = re.findall(serial_pattern, question.upper())
-    common_words = {'PRINTER', 'MACBOOK', 'THINKPAD', 'LAPTOP', 'SWITCH', 'ROUTER'}
-    real_serials = [s for s in serial_matches if s not in common_words]
+    # Rule 4: Pattern-based scoring
+    patterns = extract_search_patterns(question)
     
-    if real_serials:
-        print(f"[INTENT DEBUG] Found real serial numbers: {real_serials}")
-        return "inventory"
+    inventory_score = (
+        len(patterns["serials"]) * 3 +
+        len(patterns["assets"]) * 3 +
+        len(patterns["model_nos"]) * 2 +
+        len(patterns["models"]) * 2 +
+        len(patterns["locations"]) * 1
+    )
     
-    # Asset Number
-    if re.search(r'\b\d{7,10}\b', question):
-        print(f"[INTENT DEBUG] Found asset number pattern")
-        return "inventory"
-    
-    # Model No patterns
-    if re.search(r'\b[A-Z]{2,3}-[A-Z0-9]{3,}\b', question.upper()):
-        print(f"[INTENT DEBUG] Found model number pattern")
-        return "inventory"
-    
-    # Keyword scoring
-    inventory_keywords = [
-        "serial", "s/n", "sn", "asset", "รุ่น", "เครื่อง", "อุปกรณ์",
-        "มี", "เหลือ", "กี่", "จำนวน", "spare", "obsolete",
-        "ตำแหน่ง", "อยู่ที่", "location",
-        "model no", "asset no", "serial number",
-        "ค้นหา", "หา", "ดู", "เช็ค", "ตรวจสอบ",
-    ]
-    
+    # Rule 5: Keyword scoring
     ticket_keywords = [
-        "ช่วย", "assist", "support", "help",
-        "แจ้ง", "report", "แจ้งเตือน",
-        "ปัญหา", "problem", "issue", "bug", "error",
-        "ด่วน", "urgent", "priority", "สำคัญ",
-        "vpn", "network", "printer", "printing",
-        "software", "application", "system",
-        "account", "access", "permission",
-        "แก้", "fix", "solve", "troubleshoot",
-        "ติดตั้ง", "install", "configure", "setup",
-        "รีเซ็ต", "reset", "restart", "reboot",
+        "ช่วย", "assist", "support", "help", "แจ้ง", "report",
+        "ปัญหา", "problem", "issue", "แก้", "fix", "solve",
+        "ติดตั้ง", "install", "configure", "setup"
     ]
-    
-    inventory_score = sum(1 for k in inventory_keywords if k in q_lower)
     ticket_score = sum(1 for k in ticket_keywords if k in q_lower)
     
     print(f"[INTENT DEBUG] Scores - Inventory: {inventory_score}, Ticket: {ticket_score}")
     
-    if ticket_score > inventory_score and ticket_score >= 1:
-        print(f"[INTENT DEBUG] Classified as: ticket (score-based)")
-        return "ticket"
-    
-    if inventory_score > ticket_score and inventory_score >= 2:
-        print(f"[INTENT DEBUG] Classified as: inventory (score-based)")
+    # Decision logic
+    if inventory_score >= 3:
+        print(f"[INTENT DEBUG] Classified as: inventory (strong patterns)")
         return "inventory"
     
-    if ticket_score > 0:
-        print(f"[INTENT DEBUG] Classified as: ticket (default with keywords)")
+    if ticket_score >= 2:
+        print(f"[INTENT DEBUG] Classified as: ticket (strong keywords)")
+        return "ticket"
+    
+    if inventory_score > ticket_score:
+        return "inventory"
+    elif ticket_score > inventory_score:
         return "ticket"
     
     print(f"[INTENT DEBUG] Classified as: general")
@@ -216,8 +335,13 @@ def classify_intent(question: str) -> str:
 # KEYWORD EXTRACTION
 # ============================================================================
 
-def extract_search_patterns(question: str) -> dict:
-    """ดึง keywords และ patterns จากคำถาม"""
+def extract_search_patterns(question: str) -> Dict[str, list]:
+    """
+    Extract search patterns from question
+    
+    Returns:
+        Dictionary containing serials, assets, models, locations, etc.
+    """
     patterns = {
         "serials": [],
         "assets": [],
@@ -233,53 +357,64 @@ def extract_search_patterns(question: str) -> dict:
         'ROUTER', 'DESKTOP', 'MONITOR', 'KEYBOARD', 'SCANNER'
     }
     
-    # Serial patterns
+    # Extract Serial Numbers
     potential_serials = re.findall(r'\b[A-Z0-9]{8,20}\b', question.upper())
     serials = [s for s in potential_serials if s not in device_words]
     patterns["serials"].extend(serials)
     
-    # Asset Number
+    # Extract Asset Numbers
     assets = re.findall(r'\b\d{7,10}\b', question)
     patterns["assets"].extend(assets)
     
-    # Model No
-    model_nos = re.findall(r'\b[A-Z]{2,3}-[A-Z0-9-]+\b', question.upper())
+    # Extract Model Numbers (including H2-PNCN pattern)
+    model_nos = re.findall(r'\b[A-Z0-9]{2,3}-[A-Z0-9-]+\b', question.upper())
     patterns["model_nos"].extend(model_nos)
     
-    # Specific Model
+    # Detect Specific Model (IMPROVED - detect H2-PNCN pattern)
     q_lower = question.lower()
-    has_inventory_context = any(k in q_lower for k in ['serial', 'asset', 'จำนวน', 'มี', 'เหลือ'])
+    q_upper = question.upper()
     
-    if has_inventory_context:
-        specific_model_patterns = [
-            r'\b(FR-\d+)\b',
-            r'\b(2930F)\b',
-            r'\b(2930M)\b',
-            r'\b(JL\d+[A-Z])\b',
-        ]
-        
-        for pattern in specific_model_patterns:
-            match = re.search(pattern, question.upper())
-            if match:
-                patterns["specific_model"] = match.group(1).strip()
-                print(f"[PATTERN MATCH] Detected specific model: {patterns['specific_model']}")
-                break
+    # Check for model-like patterns in the question
+    model_pattern_checks = [
+        r'\b([A-Z0-9]{2,3}-[A-Z0-9]+)\b',  # H2-PNCN, FR-4080, etc.
+        r'\b(FR-\d+)\b',
+        r'\b(2930F|2930M)\b',
+        r'\b(JL\d+[A-Z])\b',
+        r'\b(THINKPAD\w*)\b',
+        r'\b(ELITEBOOK\w*)\b',
+    ]
     
-    # Model keywords
-    if has_inventory_context:
-        model_keywords = [
-            "fr-4080", "2930f", "2930m",
-            "thinkpad", "thinkcentre", "thinkstation", 
-            "switch", "router", "beacon",
-            "gateway", "access point", "ups",
-            "elitebook", "optiplex", "prodesk",
-        ]
-        
-        for mk in model_keywords:
-            if mk in q_lower:
+    for pattern in model_pattern_checks:
+        match = re.search(pattern, q_upper)
+        if match:
+            detected = match.group(1).strip()
+            patterns["specific_model"] = detected
+            patterns["models"].append(detected.lower())
+            print(f"[PATTERN MATCH] Detected specific model: {detected}")
+            break
+    
+    # Alternative: if question is just a code-like string, use it as model
+    if not patterns["specific_model"] and is_code_like(question):
+        clean_q = re.sub(r'\s+', '', question.upper())
+        patterns["specific_model"] = clean_q
+        patterns["models"].append(clean_q.lower())
+        print(f"[PATTERN MATCH] Using entire question as model: {clean_q}")
+    
+    # Extract Model Keywords
+    model_keywords = [
+        "fr-4080", "2930f", "2930m", "h2-pncn",
+        "thinkpad", "thinkcentre", "thinkstation", 
+        "switch", "router", "beacon",
+        "gateway", "access point", "ups",
+        "elitebook", "optiplex", "prodesk",
+    ]
+    
+    for mk in model_keywords:
+        if mk in q_lower:
+            if mk not in patterns["models"]:
                 patterns["models"].append(mk)
     
-    # Location keywords
+    # Extract Location Keywords
     location_keywords = [
         "sriracha", "ศรีราชา", 
         "chonburi", "ชลบุรี",
@@ -291,7 +426,7 @@ def extract_search_patterns(question: str) -> dict:
         if lk in q_lower:
             patterns["locations"].append(lk)
     
-    # Status keywords
+    # Extract Status Keywords
     if any(k in q_lower for k in ["spare", "พร้อมใช้", "สำรอง", "ว่าง"]):
         patterns["keywords"].append("spare")
     
@@ -302,180 +437,264 @@ def extract_search_patterns(question: str) -> dict:
     return patterns
 
 # ============================================================================
-# HYBRID RETRIEVAL SYSTEM
+# KEYWORD SEARCH WITH SQL
 # ============================================================================
 
-def keyword_search_direct(patterns: dict) -> List[Document]:
-    """ค้นหาด้วย SQL โดยตรงจาก metadata"""
+def keyword_search_direct(patterns: Dict[str, list]) -> List[Document]:
+    """
+    Direct SQL search using metadata - IMPROVED with context manager
+    """
     all_docs = []
     
     try:
-        conn = get_db_connection()
-        cursor = conn.cursor()
-        
-        base_filter = "AND cmetadata->>'source' = 'inventory'"
-        
-        # Specific Model
-        if patterns.get("specific_model"):
-            specific_model = patterns["specific_model"]
-            print(f"[SQL SEARCH] Specific Model: {specific_model}")
-            query = f"""
-            SELECT document, cmetadata
-            FROM langchain_pg_embedding
-            WHERE UPPER(cmetadata->>'model') LIKE UPPER(%s)
-            {base_filter}
-            LIMIT 100
-            """
-            cursor.execute(query, (f'%{specific_model}%',))
-            rows = cursor.fetchall()
-            print(f"[SQL RESULT] Found {len(rows)} matches")
-            for doc_content, metadata in rows:
-                all_docs.append(Document(page_content=doc_content, metadata=metadata or {}))
-        
-        # Serial Number
-        for serial in patterns["serials"]:
-            print(f"[SQL SEARCH] Serial: {serial}")
-            query = f"""
-            SELECT document, cmetadata
-            FROM langchain_pg_embedding
-            WHERE UPPER(cmetadata->>'serial') = UPPER(%s)
-            {base_filter}
-            LIMIT 3
-            """
-            cursor.execute(query, (serial,))
-            rows = cursor.fetchall()
-            print(f"[SQL RESULT] Found {len(rows)} matches")
-            for doc_content, metadata in rows:
-                all_docs.append(Document(page_content=doc_content, metadata=metadata or {}))
-        
-        # Asset Number
-        for asset in patterns["assets"]:
-            print(f"[SQL SEARCH] Asset: {asset}")
-            query = f"""
-            SELECT document, cmetadata
-            FROM langchain_pg_embedding
-            WHERE cmetadata->>'asset_no' = %s
-            {base_filter}
-            LIMIT 3
-            """
-            cursor.execute(query, (asset,))
-            rows = cursor.fetchall()
-            print(f"[SQL RESULT] Found {len(rows)} matches")
-            for doc_content, metadata in rows:
-                all_docs.append(Document(page_content=doc_content, metadata=metadata or {}))
-        
-        # Model No
-        for model_no in patterns["model_nos"]:
-            print(f"[SQL SEARCH] Model No: {model_no}")
-            query = f"""
-            SELECT document, cmetadata
-            FROM langchain_pg_embedding
-            WHERE UPPER(cmetadata->>'model_no') LIKE UPPER(%s)
-            {base_filter}
-            LIMIT 3
-            """
-            cursor.execute(query, (f'%{model_no}%',))
-            rows = cursor.fetchall()
-            print(f"[SQL RESULT] Found {len(rows)} matches")
-            for doc_content, metadata in rows:
-                all_docs.append(Document(page_content=doc_content, metadata=metadata or {}))
-        
-        # Location
-        for loc in patterns["locations"]:
-            print(f"[SQL SEARCH] Location: {loc}")
-            query = f"""
-            SELECT document, cmetadata
-            FROM langchain_pg_embedding
-            WHERE LOWER(cmetadata->>'location') LIKE LOWER(%s)
-            {base_filter}
-            LIMIT 5
-            """
-            cursor.execute(query, (f'%{loc}%',))
-            rows = cursor.fetchall()
-            print(f"[SQL RESULT] Found {len(rows)} matches")
-            for doc_content, metadata in rows:
-                all_docs.append(Document(page_content=doc_content, metadata=metadata or {}))
-        
-        cursor.close()
+        with get_db_cursor() as cursor:
+            base_filter = "AND cmetadata->>'source' = 'inventory'"
+            
+            # Search by Specific Model
+            if patterns.get("specific_model"):
+                specific_model = patterns["specific_model"]
+                print(f"[SQL SEARCH] Specific Model: {specific_model}")
+                query = f"""
+                SELECT document, cmetadata
+                FROM langchain_pg_embedding
+                WHERE (
+                    UPPER(cmetadata->>'model') LIKE UPPER(%s)
+                    OR UPPER(cmetadata->>'model_no') LIKE UPPER(%s)
+                )
+                {base_filter}
+                LIMIT {MAX_KEYWORD_RESULTS}
+                """
+                cursor.execute(query, (f'%{specific_model}%', f'%{specific_model}%'))
+                rows = cursor.fetchall()
+                print(f"[SQL RESULT] Found {len(rows)} matches")
+                all_docs.extend([
+                    Document(page_content=doc, metadata=meta or {})
+                    for doc, meta in rows
+                ])
+            
+            # Search by Model (general model search)
+            for model in patterns["models"]:
+                print(f"[SQL SEARCH] Model: {model}")
+                query = f"""
+                SELECT document, cmetadata
+                FROM langchain_pg_embedding
+                WHERE (
+                    LOWER(cmetadata->>'model') LIKE LOWER(%s)
+                    OR LOWER(cmetadata->>'model_no') LIKE LOWER(%s)
+                )
+                {base_filter}
+                LIMIT 20
+                """
+                cursor.execute(query, (f'%{model}%', f'%{model}%'))
+                rows = cursor.fetchall()
+                print(f"[SQL RESULT] Found {len(rows)} matches")
+                all_docs.extend([
+                    Document(page_content=doc, metadata=meta or {})
+                    for doc, meta in rows
+                ])
+            
+            # Search by Serial Number
+            for serial in patterns["serials"]:
+                print(f"[SQL SEARCH] Serial: {serial}")
+                query = f"""
+                SELECT document, cmetadata
+                FROM langchain_pg_embedding
+                WHERE UPPER(cmetadata->>'serial') = UPPER(%s)
+                {base_filter}
+                LIMIT {MAX_EXACT_MATCHES}
+                """
+                cursor.execute(query, (serial,))
+                rows = cursor.fetchall()
+                print(f"[SQL RESULT] Found {len(rows)} matches")
+                all_docs.extend([
+                    Document(page_content=doc, metadata=meta or {})
+                    for doc, meta in rows
+                ])
+            
+            # Search by Asset Number
+            for asset in patterns["assets"]:
+                print(f"[SQL SEARCH] Asset: {asset}")
+                query = f"""
+                SELECT document, cmetadata
+                FROM langchain_pg_embedding
+                WHERE cmetadata->>'asset_no' = %s
+                {base_filter}
+                LIMIT {MAX_EXACT_MATCHES}
+                """
+                cursor.execute(query, (asset,))
+                rows = cursor.fetchall()
+                print(f"[SQL RESULT] Found {len(rows)} matches")
+                all_docs.extend([
+                    Document(page_content=doc, metadata=meta or {})
+                    for doc, meta in rows
+                ])
+            
+            # Search by Model No
+            for model_no in patterns["model_nos"]:
+                print(f"[SQL SEARCH] Model No: {model_no}")
+                query = f"""
+                SELECT document, cmetadata
+                FROM langchain_pg_embedding
+                WHERE UPPER(cmetadata->>'model_no') LIKE UPPER(%s)
+                {base_filter}
+                LIMIT {MAX_EXACT_MATCHES}
+                """
+                cursor.execute(query, (f'%{model_no}%',))
+                rows = cursor.fetchall()
+                print(f"[SQL RESULT] Found {len(rows)} matches")
+                all_docs.extend([
+                    Document(page_content=doc, metadata=meta or {})
+                    for doc, meta in rows
+                ])
+            
+            # Search by Location
+            for loc in patterns["locations"]:
+                print(f"[SQL SEARCH] Location: {loc}")
+                query = f"""
+                SELECT document, cmetadata
+                FROM langchain_pg_embedding
+                WHERE LOWER(cmetadata->>'location') LIKE LOWER(%s)
+                {base_filter}
+                LIMIT {MAX_LOCATION_MATCHES}
+                """
+                cursor.execute(query, (f'%{loc}%',))
+                rows = cursor.fetchall()
+                print(f"[SQL RESULT] Found {len(rows)} matches")
+                all_docs.extend([
+                    Document(page_content=doc, metadata=meta or {})
+                    for doc, meta in rows
+                ])
                 
     except Exception as e:
         print(f"[ERROR] Keyword search failed: {e}")
     
     return all_docs
 
+# ============================================================================
+# HYBRID RETRIEVAL SYSTEM
+# ============================================================================
+
 def hybrid_retrieve(question: str) -> List[Document]:
-    """ผสมผสาน keyword search และ semantic search"""
+    """
+    Hybrid retrieval combining keyword search and semantic search
+    """
     print(f"\n{'='*70}")
-    print(f"[RETRIEVE START]")
+    print("[RETRIEVE START]")
     print(f"Question: {question}")
     print(f"{'='*70}")
     
+    # HARD GUARD: Exact code match for model/serial/asset
+    if is_code_like(question):
+        compact = re.sub(r'\s+', '', question.upper())
+        print(f"[HARD RETRIEVE GUARD] Code-like query: {compact}")
+
+        try:
+            with get_db_cursor() as cursor:
+                query = """
+                SELECT document, cmetadata
+                FROM langchain_pg_embedding
+                WHERE (
+                    UPPER(cmetadata->>'serial') = %s
+                    OR UPPER(cmetadata->>'asset_no') = %s
+                    OR UPPER(cmetadata->>'model_no') = %s
+                    OR UPPER(cmetadata->>'model') = %s
+                )
+                AND cmetadata->>'source' = 'inventory'
+                LIMIT %s
+                """
+                
+                cursor.execute(query, (compact, compact, compact, compact, MAX_EXACT_MATCHES))
+                rows = cursor.fetchall()
+                
+                if rows:
+                    print(f"[HARD RETRIEVE GUARD] Found {len(rows)} exact matches")
+                    return [
+                        Document(page_content=doc, metadata=meta or {})
+                        for doc, meta in rows
+                    ]
+                
+                # If no exact match, try LIKE search for model field
+                print(f"[HARD RETRIEVE GUARD] No exact match, trying LIKE search")
+                query = """
+                SELECT document, cmetadata
+                FROM langchain_pg_embedding
+                WHERE (
+                    UPPER(cmetadata->>'model') LIKE %s
+                    OR UPPER(cmetadata->>'model_no') LIKE %s
+                )
+                AND cmetadata->>'source' = 'inventory'
+                LIMIT 50
+                """
+                
+                cursor.execute(query, (f'%{compact}%', f'%{compact}%'))
+                rows = cursor.fetchall()
+                
+                if not rows:
+                    print("[HARD RETRIEVE GUARD] No match found")
+                    return []
+                
+                print(f"[HARD RETRIEVE GUARD] Found {len(rows)} matches via LIKE")
+                return [
+                    Document(page_content=doc, metadata=meta or {})
+                    for doc, meta in rows
+                ]
+        except Exception as e:
+            print(f"[ERROR] Hard guard query failed: {e}")
+            return []
+    
+    # STEP 1: Extract patterns
     patterns = extract_search_patterns(question)
     
-    print("\n[STEP 1] Keyword Search")
+    # STEP 2: Keyword search
+    print("\n[STEP 2] Keyword Search")
     keyword_docs = keyword_search_direct(patterns)
-    print(f"[STEP 1 RESULT] Found {len(keyword_docs)} docs")
+    print(f"[STEP 2 RESULT] Found {len(keyword_docs)} docs")
     
-    # ลบ duplicate
-    seen_serials = set()
-    unique_keyword_docs = []
-    for doc in keyword_docs:
-        serial = (doc.metadata.get('serial') or '').strip().upper()
-        asset = (doc.metadata.get('asset_no') or '').strip()
-        
-        if serial:
-            unique_key = f"serial_{serial}"
-        elif asset:
-            unique_key = f"asset_{asset}"
-        else:
-            unique_key = f"row_{doc.metadata.get('row', '')}_{doc.metadata.get('model', '')}"
-        
-        if unique_key not in seen_serials:
-            seen_serials.add(unique_key)
-            unique_keyword_docs.append(doc)
+    # STEP 3: Deduplicate
+    keyword_docs = deduplicate_documents(keyword_docs)
+    print(f"[STEP 3 RESULT] After dedup: {len(keyword_docs)} unique docs")
     
-    keyword_docs = unique_keyword_docs
-    print(f"[STEP 1 RESULT] After dedup: {len(keyword_docs)} unique docs")
-    
-    # Exact match for Serial
+    # STEP 4: Exact match for Serial
     if patterns["serials"]:
         exact_serial = patterns["serials"][0].upper()
-        exact_matches = [d for d in keyword_docs if (d.metadata.get('serial') or '').upper() == exact_serial]
+        exact_matches = [
+            d for d in keyword_docs 
+            if (d.metadata.get('serial') or '').upper() == exact_serial
+        ]
         if exact_matches:
             print(f"\n[EXACT MATCH] Serial: {exact_serial}")
             return exact_matches
     
-    # Exact match for Asset
+    # STEP 5: Exact match for Asset
     if patterns["assets"]:
         exact_asset = patterns["assets"][0]
-        exact_matches = [d for d in keyword_docs if (d.metadata.get('asset_no') or '') == exact_asset]
+        exact_matches = [
+            d for d in keyword_docs 
+            if (d.metadata.get('asset_no') or '') == exact_asset
+        ]
         if exact_matches:
             print(f"\n[EXACT MATCH] Asset: {exact_asset}")
             return exact_matches
     
-    # Specific Model
+    # STEP 6: Specific Model
     if patterns["specific_model"]:
-        if keyword_docs:
-            return keyword_docs
-        else:
-            return []
+        return keyword_docs if keyword_docs else []
     
-    # Use keyword results
+    # STEP 7: Return keyword results if found
     if keyword_docs:
-        return keyword_docs[:10]
+        return keyword_docs[:MAX_FINAL_RESULTS]
     
-    # Semantic Search fallback
-    print(f"\n[STEP 4] Semantic Search (fallback)")
+    # STEP 8: Semantic search fallback
+    print(f"\n[STEP 8] Semantic Search (fallback)")
     try:
-        semantic_docs = get_vectorstore().as_retriever(
-            search_type="similarity",
-            search_kwargs={
-                "k": 10,
-                "filter": {"source": "inventory"}
-            }
-        ).invoke(question)
-        print(f"[STEP 4 RESULT] Found {len(semantic_docs)} docs")
+        semantic_docs = get_vectorstore().similarity_search(
+            question,
+            k=MAX_SEMANTIC_RESULTS,
+            filter={"source": "inventory"}
+        )
+        print(f"[STEP 8 RESULT] Found {len(semantic_docs)} docs")
         
+        # Filter by specific model if needed
         if patterns["specific_model"]:
             specific_model = patterns["specific_model"].upper()
             semantic_docs = [
@@ -483,66 +702,70 @@ def hybrid_retrieve(question: str) -> List[Document]:
                 if specific_model in (d.metadata.get('model') or '').upper()
             ]
         
+        return semantic_docs
+        
     except Exception as e:
         print(f"[ERROR] Semantic search failed: {e}")
-        semantic_docs = []
+        return []
+
+# ============================================================================
+# TICKET RETRIEVAL
+# ============================================================================
+
+def retrieve_tickets(question: str) -> List[Document]:
+    """
+    Search for support tickets using semantic search
     
-    # Combine results
-    combined = keyword_docs + semantic_docs
+    Args:
+        question: User's question
+        
+    Returns:
+        List of relevant ticket documents
+    """
+    print(f"\n{'='*70}")
+    print(f"[TICKET RETRIEVE] Starting ticket search")
+    print(f"Question: {question}")
+    print(f"{'='*70}")
     
-    # Remove duplicates
-    seen = set()
-    unique_docs = []
-    for doc in combined:
-        key = (
-            doc.metadata.get('serial', ''),
-            doc.metadata.get('asset_no', ''),
-            doc.metadata.get('subject', '')
+    try:
+        semantic_docs = get_vectorstore().similarity_search(
+            question,
+            k=30,
+            filter={"source": "support_tickets"}
         )
-        if key not in seen:
-            seen.add(key)
-            unique_docs.append(doc)
-    
-    return unique_docs[:10]
+        
+        print(f"[TICKET RETRIEVE] Found {len(semantic_docs)} tickets")
+        
+        if semantic_docs:
+            print("\n[TICKET RETRIEVE] Top 5 results:")
+            for i, doc in enumerate(semantic_docs[:5], 1):
+                subject = doc.metadata.get('subject', 'N/A')
+                typ = doc.metadata.get('type', 'N/A')
+                tags = doc.metadata.get('tags', 'N/A')
+                print(f"  {i}. Subject: {subject}")
+                print(f"     Type: {typ}, Tags: {tags}")
+        
+        print(f"{'='*70}\n")
+        return semantic_docs
+        
+    except Exception as e:
+        print(f"[ERROR] Ticket retrieval failed: {e}")
+        return []
 
 # ============================================================================
 # TICKET SOLUTION EXTRACTION
 # ============================================================================
 
-def clean_text_formatting(text: str) -> str:
-    """ทำความสะอาด text"""
-    if not text:
-        return ""
+def extract_solutions_from_tickets(docs: List[Document]) -> Dict[str, list]:
+    """
+    Extract solutions from ticket documents
     
-    import html
-    
-    text = html.unescape(text)
-    text = re.sub(r'<[^>]+>', '', text)
-    text = re.sub(r'_{2,}', ' ', text)
-    text = re.sub(r'\*\*([^*]+)\*\*', r'\1', text)
-    text = re.sub(r'\*([^*]+)\*', r'\1', text)
-    text = re.sub(r'__([^_]+)__', r'\1', text)
-    
-    allowed_chars = []
-    for char in text:
-        code_point = ord(char)
+    Args:
+        docs: List of ticket documents
         
-        if (0x0E00 <= code_point <= 0x0E7F or
-            0x0020 <= code_point <= 0x007E or
-            code_point in [0x000A, 0x000D] or
-            0x2000 <= code_point <= 0x206F):
-            allowed_chars.append(char)
-        else:
-            allowed_chars.append(' ')
-    
-    text = ''.join(allowed_chars)
-    text = re.sub(r'\s+', ' ', text)
-    text = text.strip()
-    
-    return text
-
-def extract_solutions_from_tickets(docs: List[Document]) -> dict:
-    """Extract solutions จาก ticket documents"""
+    Returns:
+        Dictionary containing problems and solutions
+    """
     solutions = []
     problem_subjects = []
     
@@ -550,7 +773,8 @@ def extract_solutions_from_tickets(docs: List[Document]) -> dict:
         content = doc.page_content
         subject = doc.metadata.get('subject', '')
         
-        if 10 < len(subject) < 100:
+        # Extract problem subjects
+        if MIN_SUBJECT_LENGTH < len(subject) < MAX_SUBJECT_LENGTH:
             problem_subjects.append(subject)
         
         lines = content.split('\n')
@@ -559,6 +783,7 @@ def extract_solutions_from_tickets(docs: List[Document]) -> dict:
         for line in lines:
             line_lower = line.lower().strip()
             
+            # Solution section headers
             solution_headers = [
                 'solution:', 'fix:', 'resolution:', 'วิธีแก้:', 'แก้ไข:',
                 'how to fix:', 'troubleshooting:', 'steps to resolve:',
@@ -569,6 +794,7 @@ def extract_solutions_from_tickets(docs: List[Document]) -> dict:
                 in_solution_section = True
                 continue
             
+            # End markers
             end_markers = [
                 'note:', 'warning:', 'status:', 'priority:', 'tags:',
                 'created:', 'updated:', 'assigned:', 'หมายเหตุ:'
@@ -578,6 +804,7 @@ def extract_solutions_from_tickets(docs: List[Document]) -> dict:
                 in_solution_section = False
                 continue
             
+            # Extract solution lines
             if in_solution_section and line.strip():
                 noise_patterns = [
                     r'^[<>=/\-_]{3,}',
@@ -603,9 +830,10 @@ def extract_solutions_from_tickets(docs: List[Document]) -> dict:
                     
                     has_action = any(verb in clean_line.lower() for verb in action_verbs)
                     
-                    if has_action and 15 <= len(clean_line) <= 150:
+                    if has_action and MIN_SOLUTION_LENGTH <= len(clean_line) <= MAX_SOLUTION_LENGTH:
                         solutions.append(clean_line)
         
+        # Extract numbered steps
         numbered_pattern = r'^\s*(?:\d+[\.\):]|-|\*|•)\s+(.+)$'
         for line in lines:
             match = re.match(numbered_pattern, line)
@@ -624,16 +852,17 @@ def extract_solutions_from_tickets(docs: List[Document]) -> dict:
                 has_action = any(verb in clean_step.lower() for verb in action_verbs)
                 is_not_problem = not any(word in clean_step.lower() for word in problem_words)
                 
-                if has_action and is_not_problem and 15 <= len(clean_step) <= 150:
+                if has_action and is_not_problem and MIN_SOLUTION_LENGTH <= len(clean_step) <= MAX_SOLUTION_LENGTH:
                     solutions.append(clean_step)
     
+    # Deduplicate solutions
     unique_solutions = []
     seen = set()
     
     for sol in solutions:
         normalized = re.sub(r'\s+', ' ', sol.lower().strip())
         
-        if normalized not in seen and len(normalized) > 15:
+        if normalized not in seen and len(normalized) > MIN_SOLUTION_LENGTH:
             seen.add(normalized)
             unique_solutions.append(sol)
     
@@ -646,7 +875,16 @@ def extract_solutions_from_tickets(docs: List[Document]) -> dict:
     return result
 
 def format_solution_response(question: str, docs: List[Document]) -> str:
-    """Format response แบบ solution-focused"""
+    """
+    Format response with solution-focused approach
+    
+    Args:
+        question: User's question
+        docs: List of ticket documents
+        
+    Returns:
+        Formatted solution response
+    """
     if not docs:
         return "🔍 ไม่พบ Support Tickets ที่เกี่ยวข้อง"
     
@@ -663,19 +901,22 @@ def format_solution_response(question: str, docs: List[Document]) -> str:
     response_parts = []
     response_parts.append("## 🔧 วิธีแก้ไขปัญหา\n")
     
+    # Show common problems
     problems = extracted.get('problems', [])
     if problems:
         response_parts.append("**ปัญหาที่พบบ่อย:**")
         for i, prob in enumerate(problems[:3], 1):
             clean_prob = clean_text_formatting(prob)
-            if len(clean_prob) > 10:
+            if len(clean_prob) > MIN_SUBJECT_LENGTH:
                 response_parts.append(f"  {i}. {clean_prob}")
         response_parts.append("")
     
+    # Show solutions
     solutions = extracted.get('solutions', [])
     if solutions:
         response_parts.append("**วิธีแก้ไขเบื้องต้น:**")
         
+        # Group similar solutions
         grouped_solutions = []
         used_indices = set()
         
@@ -712,11 +953,12 @@ def format_solution_response(question: str, docs: List[Document]) -> str:
         response_parts.append("  • ตรวจสอบ error logs หรือข้อความแสดงข้อผิดพลาด")
         response_parts.append("")
     
+    # Show related tickets
     response_parts.append("**Tickets ที่เกี่ยวข้อง:**")
     shown_tickets = 0
     for doc in docs[:10]:
         subject = clean_text_formatting(doc.metadata.get('subject', ''))
-        if subject and len(subject) > 10 and shown_tickets < 5:
+        if subject and len(subject) > MIN_SUBJECT_LENGTH and shown_tickets < 5:
             shown_tickets += 1
             response_parts.append(f"  {shown_tickets}. {subject}")
     
@@ -724,107 +966,21 @@ def format_solution_response(question: str, docs: List[Document]) -> str:
     
     return "\n".join(response_parts)
 
-def retrieve_tickets(question: str) -> List[Document]:
-    """ค้นหา support tickets"""
-    print(f"\n{'='*70}")
-    print(f"[TICKET RETRIEVE] Starting ticket search")
-    print(f"Question: {question}")
-    print(f"{'='*70}")
-    
-    try:
-        semantic_docs = get_vectorstore().similarity_search(
-            question,
-            k=30,
-            filter={"source": "support_tickets"}
-        )
-        
-        print(f"[TICKET RETRIEVE] Found {len(semantic_docs)} tickets")
-        
-        if semantic_docs:
-            print("\n[TICKET RETRIEVE] Top 5 results:")
-            for i, doc in enumerate(semantic_docs[:5], 1):
-                subject = doc.metadata.get('subject', 'N/A')
-                typ = doc.metadata.get('type', 'N/A')
-                tags = doc.metadata.get('tags', 'N/A')
-                print(f"  {i}. Subject: {subject}")
-                print(f"     Type: {typ}, Tags: {tags}")
-        
-        print(f"{'='*70}\n")
-        return semantic_docs
-        
-    except Exception as e:
-        print(f"[ERROR] Ticket retrieval failed: {e}")
-        return []
-
-# ============================================================================
-# PROMPT TEMPLATES
-# ============================================================================
-
-IT_ASSET_PROMPT = ChatPromptTemplate.from_template("""
-You are an IT Asset Database. Answer in Thai or English based on user's question.
-
-DATA:
-{context}
-
-QUESTION: {question}
-
-INSTRUCTIONS:
-1. For EACH item found, you MUST show ALL of these fields:
-   - Model (from MODEL field)
-   - Serial Number (from SERIAL_NUMBER field) 
-   - Asset Number (from ASSET_NUMBER field)
-   - Status (from STATUS field)
-   - Location (from LOCATION field)
-
-2. Format like this:
-   Model: [MODEL value]
-   Serial Number: [SERIAL_NUMBER value]
-   Asset Number: [ASSET_NUMBER value]  
-   Status: [STATUS value]
-   Location: [LOCATION value]
-
-3. NEVER skip the Serial Number field
-4. If multiple items, show all of them
-5. Use simple Thai without fancy formatting
-
-ANSWER (show Serial Number for every item):
-""")
-
-SUPPORT_TICKET_PROMPT = ChatPromptTemplate.from_template("""
-You are an IT Support Expert providing solutions to technical problems.
-Answer in the SAME LANGUAGE as the question (Thai or English).
-
-## Retrieved Support Tickets:
-{context}
-
-## User Question:
-{question}
-
-## Instructions:
-1. Focus on SOLUTIONS, not just problem descriptions
-2. Extract and present ONLY the troubleshooting steps and fixes from the tickets
-3. Format your answer with clear steps
-4. Use actionable language
-5. If multiple tickets have similar problems, combine their solutions
-
-Answer:
-""")
-
-GENERAL_PROMPT = ChatPromptTemplate.from_template("""
-You are a friendly IT Support Assistant.
-Answer in the SAME LANGUAGE as the question (Thai or English).
-
-User Question: {question}
-
-Give a helpful, professional response:
-""")
-
 # ============================================================================
 # CONTEXT FORMATTING
 # ============================================================================
 
 def format_inventory_context(docs: List[Document], max_docs: int = 3) -> str:
-    """Format inventory documents"""
+    """
+    Format inventory documents for LLM context
+    
+    Args:
+        docs: List of inventory documents
+        max_docs: Maximum number of documents to include
+        
+    Returns:
+        Formatted context string
+    """
     if not docs:
         return "ไม่พบข้อมูลในระบบ"
     
@@ -841,6 +997,7 @@ def format_inventory_context(docs: List[Document], max_docs: int = 3) -> str:
         status = meta.get('status', '') or 'N/A'
         location = meta.get('location', '') or 'N/A'
         
+        # Fallback: extract serial from content if missing
         if not meta.get('serial') or meta.get('serial') == '':
             content = doc.page_content
             serial_match = re.search(r'Serial Number:\s*(.+)', content)
@@ -860,7 +1017,16 @@ def format_inventory_context(docs: List[Document], max_docs: int = 3) -> str:
     return result
 
 def format_ticket_context(docs: List[Document], max_docs: int = 10) -> str:
-    """Format support ticket documents"""
+    """
+    Format support ticket documents for LLM context
+    
+    Args:
+        docs: List of ticket documents
+        max_docs: Maximum number of documents to include
+        
+    Returns:
+        Formatted context string
+    """
     if not docs:
         return "ไม่พบ ticket ในระบบ"
     
@@ -888,11 +1054,93 @@ def format_ticket_context(docs: List[Document], max_docs: int = 10) -> str:
     return "\n".join(lines)
 
 # ============================================================================
+# PROMPT TEMPLATES
+# ============================================================================
+
+IT_ASSET_PROMPT = ChatPromptTemplate.from_template("""
+You are an IT Asset Database assistant.
+
+LANGUAGE RULE:
+- Detect the language ONLY from the user's question.
+- If the question is in Thai, answer in correct Thai.
+- If the question is in English, answer in correct English.
+- Do NOT mix languages.
+- Use proper grammar and correct spacing for the selected language.
+
+DATA:
+{context}
+
+QUESTION:
+{question}
+
+INSTRUCTIONS:
+1. For EACH asset found, you MUST include ALL fields below:
+   - Model (from MODEL)
+   - Serial Number (from SERIAL_NUMBER)
+   - Asset Number (from ASSET_NUMBER)
+   - Status (from STATUS)
+   - Location (from LOCATION)
+
+2. Use this exact format (do not add decoration or symbols):
+
+   Model: [MODEL]
+   Serial Number: [SERIAL_NUMBER]
+   Asset Number: [ASSET_NUMBER]
+   Status: [STATUS]
+   Location: [LOCATION]
+
+3. NEVER omit the Serial Number.
+4. If multiple assets exist, list ALL of them.
+5. Use clear, simple language with correct spacing.
+
+ANSWER:
+""")
+SUPPORT_TICKET_PROMPT = ChatPromptTemplate.from_template("""
+You are an IT Support Expert.
+
+LANGUAGE RULE:
+- Detect the language ONLY from the user's question.
+- Respond in the SAME language.
+- Use grammatically correct sentences and proper spacing.
+- Do NOT mix Thai and English.
+
+RETRIEVED SUPPORT TICKETS:
+{context}
+
+USER QUESTION:
+{question}
+
+INSTRUCTIONS:
+1. Focus ONLY on solutions and troubleshooting steps.
+2. Ignore problem descriptions unless needed for clarity.
+3. Present the answer as clear, ordered steps.
+4. Use actionable and professional language.
+5. If multiple tickets describe the same issue, merge their solutions into one.
+
+ANSWER:
+""")
+GENERAL_PROMPT = ChatPromptTemplate.from_template("""
+You are a friendly and professional IT Support Assistant.
+
+LANGUAGE RULE:
+- Detect the language from the user's question.
+- Reply in the SAME language.
+- Use correct grammar and natural sentence structure.
+- Ensure proper spacing and readability.
+
+USER QUESTION:
+{question}
+
+Provide a clear, helpful, and professional response:
+""")
+
+# ============================================================================
 # CHAT HISTORY
 # ============================================================================
 
 @lru_cache(maxsize=10)
 def get_session_history(session_id: str):
+    """Get or create chat history for session"""
     return PostgresChatMessageHistory(
         connection_string=PSYCOPG_CONN_INFO,
         session_id=session_id
@@ -907,7 +1155,17 @@ def chat_with_warehouse_system(
     question: str,
     image: bytes | None = None
 ) -> Generator[str, None, None]:
-    """Main chat function"""
+    """
+    Main chat function with streaming response
+    
+    Args:
+        session_id: Unique session identifier
+        question: User's question
+        image: Optional image input (not implemented)
+        
+    Yields:
+        Response chunks
+    """
     
     print("\n" + "="*70)
     print(f"[CHAT START] Session: {session_id}")
@@ -918,16 +1176,25 @@ def chat_with_warehouse_system(
         llm = get_llm()
         history = get_session_history(session_id)
         
+        # Classify intent
         intent = classify_intent(question)
+        force_inventory = is_code_like(question)
+
         print(f"\n[INTENT] {intent}")
+
+        if force_inventory:
+            print("[GUARD] Force inventory (model/serial detected)")
+            intent = "inventory"        
         
+        # Retrieve documents
+        docs = hybrid_retrieve(question)
+
         if intent == "inventory":
             print("[CHAT] Processing as INVENTORY query")
-            docs = hybrid_retrieve(question)
             
             if not docs:
-                yield "🔍 ไม่พบข้อมูลในระบบ\n\n"
-                yield "💡 ลองตรวจสอบ:\n"
+                yield "ไม่พบข้อมูลในระบบ\n\n"
+                yield "ลองตรวจสอบ:\n"
                 yield "• Serial Number ถูกต้องหรือไม่\n"
                 yield "• ค้นหาด้วย Model หรือ Asset Number แทน\n"
                 return
@@ -943,6 +1210,7 @@ def chat_with_warehouse_system(
             
             full_response_parts = [header]
             
+            # Display each item
             for i, doc in enumerate(docs, 1):
                 meta = doc.metadata
                 
@@ -993,6 +1261,7 @@ def chat_with_warehouse_system(
                 yield separator
                 full_response_parts.append(separator)
             
+            # Save to history
             full_response = "".join(full_response_parts)
             history.add_user_message(question)
             history.add_ai_message(full_response)
@@ -1070,26 +1339,31 @@ def chat_with_warehouse_system(
         print(f"\n[ERROR] Chat failed: {e}")
         import traceback
         traceback.print_exc()
-        yield f"❌ เกิดข้อผิดพลาด: {str(e)}\n"
+        yield f"เกิดข้อผิดพลาด: {str(e)}\n"
 
 # ============================================================================
-# UTILITY FUNCTIONS
+# CLEANUP FUNCTIONS
 # ============================================================================
 
 def clear_session_history(session_id: str):
-    """ลบ chat history"""
+    """Clear chat history for a session"""
     history = get_session_history(session_id)
     history.clear()
     get_session_history.cache_clear()
 
 def cleanup_resources():
-    """ปิด connections"""
+    """Clean up and close all resources"""
     global _vectorstore, _embeddings, _llm, _retriever, _db_conn
+    
     if _db_conn and not _db_conn.closed:
         _db_conn.close()
+        print("[CLEANUP] Database connection closed")
+    
     _vectorstore = None
     _embeddings = None
     _llm = None
     _retriever = None
     _db_conn = None
+    
     get_session_history.cache_clear()
+    print("[CLEANUP] Resources cleaned up")
