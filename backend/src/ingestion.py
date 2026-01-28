@@ -1,6 +1,3 @@
-# ============================================================================
-# IT SUPPORT KNOWLEDGE BASE - DATA INGESTION (FIXED VERSION)
-# ============================================================================
 import os
 import gc
 import pandas as pd
@@ -84,7 +81,6 @@ def detect_device_category(model: str) -> str:
 def build_inventory_content(row: Dict, sheet_label: str) -> str:
     """สร้าง content สำหรับ inventory items"""
     
-    # ✅ Debug: แสดง keys ที่มีในแถว (แสดงครั้งแรกของแต่ละ sheet)
     if not hasattr(build_inventory_content, '_debug_shown'):
         build_inventory_content._debug_shown = set()
     
@@ -92,8 +88,7 @@ def build_inventory_content(row: Dict, sheet_label: str) -> str:
     serial = clean_text(row.get('Serial', ''))
     status = clean_text(row.get('Status', ''))
     asset_no = clean_text(row.get('Asset No', ''))
-    
-    # ✅ ลองหา Location จากหลายชื่อคอลัมน์
+
     loc = None
     for loc_key in ['Locations', 'Location', 'location']:
         if loc_key in row:
@@ -244,10 +239,8 @@ def load_inventory_documents(file_path: str, sheet_configs: List[tuple]) -> List
             print(f"\n  Loading sheet: {sheet_name}")
             df = pd.read_excel(file_path, sheet_name=sheet_name, dtype=str).dropna(how="all")
             
-            # ✅ ทำความสะอาดชื่อคอลัมน์
             df.columns = [str(c).strip() for c in df.columns]
             
-            # ✅ Debug: แสดงชื่อคอลัมน์
             print(f"  Columns: {list(df.columns)}")
             
             for idx, row in df.iterrows():
@@ -259,19 +252,17 @@ def load_inventory_documents(file_path: str, sheet_configs: List[tuple]) -> List
                 
                 # สร้าง content
                 content = build_inventory_content(data, label)
-                
-                # ✅ สร้าง metadata โดยหา Model No จากหลายชื่อคอลัมน์
+         
                 model_value = clean_text(data.get("Model", ""))
                 
-                # ลองหา Model No จากชื่อคอลัมน์ที่เป็นไปได้
                 model_no_value = None
                 for col_name in ["Model No.", "Model No", "ModelNo", "model_no"]:
                     if col_name in data:
                         temp = clean_text(data.get(col_name, ""))
                         if temp:
                             model_no_value = temp
-                            # Debug แสดงครั้งแรก
-                            if idx < 3:  # แสดงแค่ 3 แถวแรก
+                            
+                            if idx < 3:  
                                 print(f"    Row {idx}: Model No from '{col_name}' = {model_no_value}")
                             break
                 
@@ -288,21 +279,14 @@ def load_inventory_documents(file_path: str, sheet_configs: List[tuple]) -> List
                             location_value = temp
                             break
                 
-                # ✅ สร้าง metadata
                 metadata = {
                     "source": "inventory",
                     "sheet": sheet_name,
-                    
-                    # ✅ UPPERCASE สำหรับการค้นหา
                     "model": model_value.upper() if model_value else None,
                     "model_no": model_no_value.upper() if model_no_value else None,
                     "serial": serial_value.upper() if serial_value else None,
-                    
-                    # ไม่ต้อง uppercase
                     "asset_no": asset_no_value,
                     "location": location_value,
-                    
-                    # lowercase
                     "status": status_value.lower() if status_value else None,
                     "row": int(idx)
                 }
@@ -423,8 +407,6 @@ def save_to_database_with_progress(docs: List[Document], embeddings,
     print(f"Collection: {collection_name}")
     print(f"Batch size: {batch_size}")
     print(f"{'='*70}\n")
-    
-    # ✅ ลบข้อมูลเก่า
     try:
         conn_str = connection_string.replace('postgresql+psycopg2://', 'postgresql://')
         conn = psycopg2.connect(conn_str)
