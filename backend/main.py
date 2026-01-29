@@ -5,6 +5,10 @@ from src.rag_query import chat_with_warehouse_system, get_session_history, clear
 import json
 import os
 import asyncio
+from pydantic import BaseModel
+
+class SessionUpdate(BaseModel):
+    title: str
 
 # ============================================================================
 # APP INITIALIZATION
@@ -127,7 +131,34 @@ async def chat_endpoint(request: Request):
     except Exception as e:
         print(f"Chat Error: {e}")
         raise HTTPException(status_code=500, detail=str(e))
-
+@app.put("/api/sessions/{session_id}")
+async def update_session_title(session_id: str, payload: SessionUpdate):
+    if not os.path.exists(HISTORY_FILE):
+        raise HTTPException(status_code=404, detail="History file not found")
+    
+    try:
+        with open(HISTORY_FILE, "r", encoding="utf-8") as f:
+            sessions = json.load(f)
+        
+        # ค้นหาและอัปเดต title
+        updated = False
+        for s in sessions:
+            if s['id'] == session_id:
+                s['title'] = payload.title
+                updated = True
+                break
+        
+        if not updated:
+            raise HTTPException(status_code=404, detail="Session not found")
+            
+        with open(HISTORY_FILE, "w", encoding="utf-8") as f:
+            json.dump(sessions, f, ensure_ascii=False, indent=2)
+            
+        return {"status": "success", "updated_title": payload.title}
+        
+    except Exception as e:
+        print(f"Update error: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
 # ============================================================================
 # SERVER ENTRY POINT
 # ============================================================================

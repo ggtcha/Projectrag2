@@ -41,12 +41,27 @@
 .read-the-docs {
   color: #888;
 }
+
 .prose {
+    /* บังคับใช้ Sarabun เป็นอันดับแรก */
+    font-family: 'Sarabun', system-ui, -apple-system, sans-serif !important;
+    
     text-align: left !important;
-    letter-spacing: 0 !important;
+    letter-spacing: normal !important;
     word-spacing: normal !important;
-    text-rendering: optimizeSpeed !important;
+    text-rendering: optimizeLegibility !important;
     white-space: pre-wrap !important;
+    word-break: break-word !important; 
+    line-break: strict;
+    overflow-wrap: break-word;
+    
+    /* บังคับการจัดวางอักษรไทยให้แม่นยำ */
+    font-variant-ligatures: common-ligatures !important;
+    font-feature-settings: "kern" on, "liga" on !important;
+    
+    /* แก้ไขปัญหาสระลอย/เยื้อง ในเบราว์เซอร์ตระกูล Webkit */
+    -webkit-font-smoothing: antialiased;
+    -moz-osx-font-smoothing: grayscale;
 }
 
 #root {

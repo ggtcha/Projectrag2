@@ -6,6 +6,7 @@ from functools import lru_cache
 from datetime import datetime
 from contextlib import contextmanager
 import psycopg2
+import html
 
 from langchain_ollama import ChatOllama, OllamaEmbeddings
 from langchain_community.vectorstores import PGVector
@@ -29,7 +30,7 @@ PG_DATABASE = os.getenv("PG_DATABASE")
 COLLECTION_NAME = os.getenv("COLLECTION_NAME")
 
 # LLM settings
-LLM_MODEL = os.getenv("LLM_MODEL", "qwen2.5:0.5b")
+LLM_MODEL = os.getenv("LLM_MODEL", "qwen2.5:1.5b")
 EMBED_MODEL = os.getenv("EMBED_MODEL", "nomic-embed-text")
 OLLAMA_BASE_URL = "http://localhost:11434"
 
@@ -204,37 +205,35 @@ def deduplicate_documents(docs: List[Document]) -> List[Document]:
             unique_docs.append(doc)
     
     return unique_docs
-
 def clean_text_formatting(text: str) -> str:
     if not text:
-        return
+        return ""
     
     import html
+    import re
     
+
     text = html.unescape(text)
     text = re.sub(r'<[^>]+>', '', text)
     text = re.sub(r'_{2,}', ' ', text)
     text = re.sub(r'\*\*([^*]+)\*\*', r'\1', text)
     text = re.sub(r'\*([^*]+)\*', r'\1', text)
     text = re.sub(r'__([^_]+)__', r'\1', text)
-    
+
     allowed_chars = []
     for char in text:
         code_point = ord(char)
-        
         if (0x0E00 <= code_point <= 0x0E7F or
             0x0020 <= code_point <= 0x007E or
             code_point in [0x000A, 0x000D] or
             0x2000 <= code_point <= 0x206F):
             allowed_chars.append(char)
-        else:
-            allowed_chars.append(' ')
-    
+
     text = ''.join(allowed_chars)
+    text = re.sub(r'(?<=[\u0E00-\u0E7F])\s+(?=[\u0E00-\u0E7F])', '', text)
     text = re.sub(r'\s+', ' ', text)
-    text = text.strip()
     
-    return text
+    return text.strip()
 
 #============================================================================
 # INTENT CLASSIFICATION
@@ -954,7 +953,6 @@ def format_ticket_context(docs: List[Document], max_docs: int = 10) -> str:
 #============================================================================
 # PROMPT TEMPLATES
 #============================================================================
-
 IT_ASSET_PROMPT = ChatPromptTemplate.from_template("""
 You are an IT Asset Database assistant.
 
@@ -963,7 +961,7 @@ LANGUAGE RULE:
 - If the question is in Thai, answer in correct Thai.
 - If the question is in English, answer in correct English.
 - Do NOT mix languages.
-- Use proper grammar and correct spacing for the selected language.
+- สำหรับภาษาไทย: ห้ามเว้นวรรคระหว่างตัวอักษรหรือคำโดยไม่จำเป็น (Do NOT use extra spaces between characters or words in Thai).
 
 DATA:
 {context}
@@ -979,7 +977,7 @@ INSTRUCTIONS:
    - Status (from STATUS)
    - Location (from LOCATION)
 
-2. Use this exact format (do not add decoration or symbols):
+2. Use this exact format:
 
    Model: [MODEL]
    Serial Number: [SERIAL_NUMBER]
@@ -989,7 +987,6 @@ INSTRUCTIONS:
 
 3. NEVER omit the Serial Number.
 4. If multiple assets exist, list ALL of them.
-5. Use clear, simple language with correct spacing.
 
 ANSWER:
 """)
@@ -1000,8 +997,8 @@ You are an IT Support Expert.
 LANGUAGE RULE:
 - Detect the language ONLY from the user's question.
 - Respond in the SAME language.
-- Use grammatically correct sentences and proper spacing.
 - Do NOT mix Thai and English.
+- สำหรับภาษาไทย: เขียนให้เป็นประโยคปกติ ห้ามเว้นวรรคแยกตัวอักษร (For Thai: Write natural sentences, DO NOT separate characters with spaces).
 
 RETRIEVED SUPPORT TICKETS:
 {context}
@@ -1011,10 +1008,8 @@ USER QUESTION:
 
 INSTRUCTIONS:
 1. Focus ONLY on solutions and troubleshooting steps.
-2. Ignore problem descriptions unless needed for clarity.
-3. Present the answer as clear, ordered steps.
-4. Use actionable and professional language.
-5. If multiple tickets describe the same issue, merge their solutions into one.
+2. Present the answer as clear, ordered steps.
+3. Use actionable and professional language.
 
 ANSWER:
 """)
@@ -1025,8 +1020,7 @@ You are a friendly and professional IT Support Assistant.
 LANGUAGE RULE:
 - Detect the language from the user's question.
 - Reply in the SAME language.
-- Use correct grammar and natural sentence structure.
-- Ensure proper spacing and readability.
+- For Thai: Use natural flow without extra spacing between characters. (ภาษาไทย: เขียนติดกันตามปกติ ไม่ต้องเว้นวรรคระหว่างตัวอักษร)
 
 USER QUESTION:
 {question}
