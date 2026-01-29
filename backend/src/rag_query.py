@@ -37,10 +37,8 @@ OLLAMA_BASE_URL = "http://localhost:11434"
 # Response mode: "rule" uses pattern extraction, "llm" uses AI generation
 TICKET_RESPONSE_MODE = os.getenv("TICKET_RESPONSE_MODE", "rule")
 
-# Logging level: "debug", "info", "error", "none"
 LOG_LEVEL = os.getenv("LOG_LEVEL", "info")
 
-# Database connection strings
 SQLALCHEMY_DB_URL = (
     f"postgresql+psycopg2://"
     f"{PG_USER}:{PG_PASSWORD}@{PG_HOST}:{PG_PORT}/{PG_DATABASE}"
@@ -156,17 +154,17 @@ def get_retriever():
 def get_llm():
     global _llm
     if _llm is None:
-        log("[LLM] Connecting to LLM...", "debug")
+        log("[LLM] Connecting to LLM with Strict Settings...", "debug")
         _llm = ChatOllama(
             model=LLM_MODEL,
-            temperature=0.1,
+            temperature=0.0,  # ปรับเป็น 0 เพื่อลดการมโนข้อมูล
             stream=False,
             base_url=OLLAMA_BASE_URL,
             num_ctx=2048,
-            num_predict=128,
-            repeat_penalty=1.1,
-            top_p=0.9,
-            top_k=40
+            num_predict=256,
+            repeat_penalty=1.2, # ป้องกันการเว้นวรรคแปลกๆ และภาษาจีน
+            top_p=0.4,
+            top_k=20
         )
     return _llm
 
@@ -208,12 +206,8 @@ def deduplicate_documents(docs: List[Document]) -> List[Document]:
 def clean_text_formatting(text: str) -> str:
     if not text:
         return ""
-    
-    import html
-    import re
-    
-
     text = html.unescape(text)
+    text = re.sub(r'(?<=[\u0E00-\u0E7F])\s+(?=[\u0E00-\u0E7F])', '', text)
     text = re.sub(r'<[^>]+>', '', text)
     text = re.sub(r'_{2,}', ' ', text)
     text = re.sub(r'\*\*([^*]+)\*\*', r'\1', text)
@@ -1074,131 +1068,77 @@ def chat_with_warehouse_system(
         if intent == "inventory":
             log("[Chat] Processing inventory query", "debug")
             
-            if not docs:
-                yield "ไม่พบข้อมูลในระบบ\n\n"
-                yield "ลองตรวจสอบ:\n"
-                yield "- Serial Number ถูกต้องหรือไม่\n"
-                yield "- ค้นหาด้วย Model หรือ Asset Number แทน\n"
-                return
+            inventory_display_text = ""
+            # กรณีเจอข้อมูลใน Database
+            if docs:
+                total_docs = len(docs)
+                header = f"พบข้อมูล {total_docs} รายการในระบบคลัง:\n\n"
+                yield header
+                inventory_display_text += header
+                
+                for i, doc in enumerate(docs, 1):
+                    meta = doc.metadata
+                    item_info = (
+                        f"รายการที่ {i}:\n"
+                        f"- Model: {meta.get('model', 'N/A')}\n"
+                        f"- Serial Number: {meta.get('serial', 'N/A')}\n"
+                        f"- Asset Number: {meta.get('asset_no', 'N/A')}\n"
+                        f"- Status: {meta.get('status', 'N/A')}\n"
+                        f"- Location: {meta.get('location', 'N/A')}\n\n"
+                    )
+                    yield item_info
+                    inventory_display_text += item_info
             
-            total_docs = len(docs)
+            # --- ส่งต่อให้ LLM ประมวลผลต่อ (Hybrid) ---
+            # แม้ไม่เจอ Docs บรรทัดนี้จะทำงานต่อเพื่อให้ AI ใช้ความรู้ตัวเองตอบ
+            context = format_inventory_context(docs) if docs else "ไม่พบข้อมูลอุปกรณ์นี้ในคลังสินค้า"
             
-            if total_docs == 1:
-                header = "พบข้อมูล 1 รายการ:\n\n"
-            else:
-                header = f"พบข้อมูล {total_docs} รายการ:\n\n"
+            chain = (
+                {"context": lambda _: context, "question": RunnablePassthrough()} 
+                | IT_ASSET_PROMPT 
+                | llm
+            )
             
-            yield header
+            full_ai_part = ""
+            # ถ้ามีข้อมูลในคลังแล้ว อาจจะใส่คั่นนิดนึงก่อน AI พูด
+            if docs: yield "--- คำแนะนำเพิ่มเติม ---\n"
             
-            full_response_parts = [header]
+            for chunk in chain.stream(question):
+                content = getattr(chunk, "content", str(chunk))
+                # กรองภาษาไทยให้สวยงาม
+                content = clean_text_formatting(content)
+                full_ai_part += content
+                yield content
             
-            # Display each item
-            for i, doc in enumerate(docs, 1):
-                meta = doc.metadata
-                
-                item_header = f"{'='*3}\nรายการที่ {i}:\n{'='*3}\n"
-                yield item_header
-                full_response_parts.append(item_header)
-                
-                model = meta.get('model', 'N/A')
-                model_line = f"- Model: {model}\n"
-                yield model_line
-                full_response_parts.append(model_line)
-                
-                model_no = meta.get('model_no', '')
-                if model_no and model_no.strip() and model_no != 'N/A':
-                    model_no_line = f"- Model No: {model_no}\n"
-                    yield model_no_line
-                    full_response_parts.append(model_no_line)
-                
-                serial = meta.get('serial', '')
-                if serial and serial.strip() and serial != 'N/A':
-                    serial_line = f"- Serial Number: {serial}\n"
-                    yield serial_line
-                    full_response_parts.append(serial_line)
-                else:
-                    no_serial_line = f"- Serial Number: ไม่มีข้อมูล\n"
-                    yield no_serial_line
-                    full_response_parts.append(no_serial_line)
-                
-                asset_no = meta.get('asset_no', '')
-                if asset_no and asset_no.strip() and asset_no != 'N/A':
-                    asset_line = f"- Asset Number: {asset_no}\n"
-                    yield asset_line
-                    full_response_parts.append(asset_line)
-                
-                status = meta.get('status', '')
-                if status and status.strip() and status != 'N/A':
-                    status_line = f"- Status: {status}\n"
-                    yield status_line
-                    full_response_parts.append(status_line)
-                
-                location = meta.get('location', '')
-                if location and location.strip() and location != 'N/A':
-                    location_line = f"- Location: {location}\n"
-                    yield location_line
-                    full_response_parts.append(location_line)
-                
-                separator = "\n\n"
-                yield separator
-                full_response_parts.append(separator)
-            
-            # Save to history
-            full_response = "".join(full_response_parts)
+            # บันทึกประวัติรวมกันทั้งข้อมูลจาก DB และที่ AI พูด
             history.add_user_message(question)
-            history.add_ai_message(full_response)
+            history.add_ai_message(inventory_display_text + full_ai_part)
             return
-        
         #--------------------------------------------------------------------
         # TICKET QUERY HANDLING
         #--------------------------------------------------------------------
         elif intent == "ticket":
             log("[Chat] Processing ticket query", "debug")
-            
             ticket_docs = retrieve_tickets(question)
             
-            if not ticket_docs:
-                yield "ไม่พบ Support Tickets ที่เกี่ยวข้อง\n\n"
-                yield "ลองถามคำถามแบบนี้:\n"
-                yield "- มีปัญหาเกี่ยวกับ VPN บ้างไหม\n"
-                yield "- ticket เกี่ยวกับ network มีอะไรบ้าง\n"
-                yield "- แก้ปัญหา login ยังไง\n"
-                return
-
-            log(f"[Chat] Response mode: {TICKET_RESPONSE_MODE}", "debug")
+            # หากไม่มี Ticket ในระบบ ให้ AI ใช้ความรู้ทั่วไปตอบแทน
+            context = format_ticket_context(ticket_docs, max_docs=10) if ticket_docs else "ไม่พบข้อมูลในฐานข้อมูล Support Ticket"
             
-            if TICKET_RESPONSE_MODE == "rule":
-                log("[Chat] Using rule-based extraction", "debug")
-                response = format_solution_response(question, ticket_docs)
-                
-                for char in response:
-                    yield char
-                
-                history.add_user_message(question)
-                history.add_ai_message(response)
-                
-            else:
-                log("[Chat] Using LLM-based response", "debug")
-                context = format_ticket_context(ticket_docs, max_docs=10)
-                
-                chain = (
-                    {
-                        "context": lambda _: context,
-                        "question": RunnablePassthrough()
-                    }
-                    | SUPPORT_TICKET_PROMPT
-                    | llm
-                )
-                
-                full_response = ""
-                for chunk in chain.stream(question):
-                    content = getattr(chunk, "content", str(chunk))
-                    full_response += content
-                    yield content
-                
-                history.add_user_message(question)
-                history.add_ai_message(full_response)
+            chain = (
+                {"context": lambda _: context, "question": RunnablePassthrough()} 
+                | SUPPORT_TICKET_PROMPT 
+                | llm
+            )
             
+            full_response = ""
+            for chunk in chain.stream(question):
+                content = getattr(chunk, "content", str(chunk))
+                content = clean_text_formatting(content)
+                full_response += content
+                yield content
+            
+            history.add_user_message(question)
+            history.add_ai_message(full_response)
             return
         
         #--------------------------------------------------------------------
