@@ -124,7 +124,8 @@ def build_ticket_content(row: Dict) -> str:
     queue = clean_text(row.get('queue', '')) or ''
     priority = clean_text(row.get('priority', '')) or ''
     lang = clean_text(row.get('language_version', '')) or ''
-    
+    answer = clean_text(row.get('answer', '')) or ''
+
     tag_1 = clean_text(row.get('tag_1', '')) or ''
     tag_2 = clean_text(row.get('tag_2', '')) or ''
     tag_3 = clean_text(row.get('tag_3', '')) or ''
@@ -218,6 +219,7 @@ def build_ticket_content(row: Dict) -> str:
         f"รายละเอียด: {body}",
         f"ประเภท: {type_th} ({type_ticket})",
         f"แผนกที่รับผิดชอบ: {queue_th}",
+        f"วิธีแก้ไขที่เคยบันทึกไว้: {answer}",
         f"ระดับความสำคัญ: {priority_th}",
         f"แท็ก/หมวดหมู่: {tags_th}" if tags_th else "",
         f"ภาษา: {lang}",

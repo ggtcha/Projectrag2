@@ -6,6 +6,13 @@ import {
 } from 'lucide-react';
 import ReactMarkdown from 'react-markdown';
 
+// --- ฟังก์ชันแก้ภาษาไทยเว้นวรรค (เพิ่มใหม่ตรงนี้) ---
+const cleanThaiSpacing = (text) => {
+  if (!text) return "";
+  // ลบช่องว่างระหว่างตัวอักษรไทย (เช่น "ส ว ั ส ด ี" -> "สวัสดี")
+  return text.replace(/([\u0E00-\u0E7F])\s+(?=[\u0E00-\u0E7F])/g, '$1');
+};
+
 // --- Sub-Component สำหรับปุ่ม Copy ---
 const CopyButton = ({ text }) => {
   const [copied, setCopied] = useState(false);
@@ -36,7 +43,6 @@ function App() {
   const [isSidebarOpen, setIsSidebarOpen] = useState(true);
   const [deleteConfirmId, setDeleteConfirmId] = useState(null);
   
-  // States สำหรับ Rename และ Context Menu
   const [editingSessionId, setEditingSessionId] = useState(null);
   const [newTitle, setNewTitle] = useState('');
   const [activeMenuId, setActiveMenuId] = useState(null);
@@ -62,7 +68,7 @@ function App() {
   }, []);
 
   const loadSession = async (id) => {
-    if (editingSessionId === id) return; // ไม่โหลดแชทถ้ากำลังแก้ชื่ออยู่
+    if (editingSessionId === id) return;
     setSessionId(id);
     try {
       const res = await fetch(`http://localhost:8000/api/messages/${id}`);
@@ -128,8 +134,8 @@ function App() {
             const content = line.substring(6);
             if (content) {
               accContent += content;
-              // เรียกใช้ฟังก์ชัน cleanThaiSpacing
-              const displayContent = typeof cleanThaiSpacing !== 'undefined' ? cleanThaiSpacing(accContent) : accContent; 
+              // เรียกใช้ฟังก์ชัน cleanThaiSpacing ตรงนี้
+              const displayContent = cleanThaiSpacing(accContent); 
               setMessages(prev => {
                 const updated = [...prev];
                 updated[updated.length - 1] = { role: 'assistant', content: displayContent };
@@ -146,7 +152,7 @@ function App() {
   return (
     <div className="flex h-screen bg-[#FDFBF7] overflow-hidden font-sans">
       
-      {/* 1. Modal ยืนยันการลบ */}
+      {/* Modal ยืนยันการลบ */}
       {deleteConfirmId && (
         <div className="fixed inset-0 bg-black/50 backdrop-blur-sm z-[100] flex items-center justify-center p-4 animate-in fade-in">
           <div className="bg-white rounded-2xl shadow-2xl max-w-md w-full p-6 animate-in zoom-in-95">
@@ -165,7 +171,7 @@ function App() {
         </div>
       )}
 
-      {/* 2. Sidebar Section */}
+      {/* Sidebar Section */}
       <aside className={`bg-[#171717] text-white flex flex-col transition-all duration-300 ease-in-out border-r border-white/5 shadow-2xl ${isSidebarOpen ? 'w-72' : 'w-0'} overflow-hidden relative`}>
         <div className="p-6 flex items-center justify-between min-w-[280px]">
           <h2 className="text-xl font-semibold tracking-tight flex items-center gap-3">
@@ -205,7 +211,7 @@ function App() {
                 )}
               </div>
 
-              {/* ปุ่ม 3 จุด (Action Menu) */}
+              {/* Action Menu */}
               <div className="relative">
                 <button onClick={(e) => { e.stopPropagation(); setActiveMenuId(activeMenuId === s.id ? null : s.id); }}
                   className="opacity-0 group-hover:opacity-100 p-1 hover:bg-white/10 rounded transition-all">
@@ -232,7 +238,7 @@ function App() {
         </div>
       </aside>
 
-      {/* 3. Main Area Section */}
+      {/* Main Area */}
       <main className="flex-1 flex flex-col relative overflow-hidden">
         {!isSidebarOpen && (
           <button onClick={() => setIsSidebarOpen(true)} className="absolute top-4 left-4 z-50 p-2 bg-white border border-gray-200 rounded-lg shadow-md hover:bg-gray-50 transition-all">
@@ -258,7 +264,6 @@ function App() {
                     </div>
                   </div>
                   
-                  {/* Bubble ข้อความ + ปุ่ม Copy */}
                   <div className="relative group">
                     <div className={`p-4 shadow-sm ${
                       m.role === 'user' ? 'bg-[#FFE8DC] text-[#723b21] rounded-t-3xl rounded-bl-3xl rounded-br-lg' 
@@ -268,7 +273,6 @@ function App() {
                         <ReactMarkdown>{m.content}</ReactMarkdown>
                       </div>
                     </div>
-                    {/* ปุ่ม Copy แสดงเมื่อ Hover */}
                     <div className={`absolute -bottom-8 ${m.role === 'user' ? 'left-0' : 'right-0'} opacity-0 group-hover:opacity-100 transition-opacity`}>
                       <CopyButton text={m.content} />
                     </div>
@@ -280,7 +284,7 @@ function App() {
           </div>
         </div>
 
-        {/* 4. Input Area */}
+        {/* Input Area */}
         <div className="p-6 bg-white/80 backdrop-blur-md border-t border-gray-100">
           <div className="max-w-4xl mx-auto flex gap-4 items-center">
             <input 
