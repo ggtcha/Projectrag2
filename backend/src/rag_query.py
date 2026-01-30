@@ -182,18 +182,7 @@ def clean_text_formatting(text: str) -> str:
     text = re.sub(r'\*\*([^*]+)\*\*', r'\1', text)
     text = re.sub(r'\*([^*]+)\*', r'\1', text)
     text = re.sub(r'__([^_]+)__', r'\1', text)
-
-    allowed_chars = []
-    for char in text:
-        code_point = ord(char)
-        if (0x0E00 <= code_point <= 0x0E7F or
-            0x0020 <= code_point <= 0x007E or
-            code_point in [0x000A, 0x000D] or
-            0x2000 <= code_point <= 0x206F):
-            allowed_chars.append(char)
-
-    text = ''.join(allowed_chars)
-    text = re.sub(r'(?<=[\u0E00-\u0E7F])\s+(?=[\u0E00-\u0E7F])', '', text)
+    text = re.sub(r'\*\*(.*?)\*\*', r'\1', text)
     text = re.sub(r'\s+', ' ', text)
     return text.strip()
 

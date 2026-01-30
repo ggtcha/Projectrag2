@@ -6,11 +6,15 @@ import {
 } from 'lucide-react';
 import ReactMarkdown from 'react-markdown';
 
-// --- ฟังก์ชันแก้ภาษาไทยเว้นวรรค (เพิ่มใหม่ตรงนี้) ---
+// --- [FIX] ฟังก์ชันแก้ภาษาไทยและตัวเลขเว้นวรรค ---
+// ประกาศไว้ตรงนี้เพื่อให้ทุกส่วนเรียกใช้ได้แน่นอน
 const cleanThaiSpacing = (text) => {
   if (!text) return "";
-  // ลบช่องว่างระหว่างตัวอักษรไทย (เช่น "ส ว ั ส ด ี" -> "สวัสดี")
-  return text.replace(/([\u0E00-\u0E7F])\s+(?=[\u0E00-\u0E7F])/g, '$1');
+  return text
+    // 1. ลบช่องว่างระหว่างตัวอักษรไทย (เช่น "ส ว ั ส ด ี" -> "สวัสดี")
+    .replace(/([\u0E00-\u0E7F])\s+(?=[\u0E00-\u0E7F])/g, '$1')
+    // 2. ลบช่องว่างระหว่างตัวเลข (เช่น "7 6" -> "76") เพื่อแก้ปัญหาปี/จำนวน
+    .replace(/(\d)\s+(?=\d)/g, '$1');
 };
 
 // --- Sub-Component สำหรับปุ่ม Copy ---
@@ -18,7 +22,9 @@ const CopyButton = ({ text }) => {
   const [copied, setCopied] = useState(false);
   const handleCopy = async () => {
     try {
-      await navigator.clipboard.writeText(text);
+      // Clean text ก่อน copy ด้วย เพื่อให้ได้ข้อความที่สวยงาม
+      const cleanText = cleanThaiSpacing(text);
+      await navigator.clipboard.writeText(cleanText);
       setCopied(true);
       setTimeout(() => setCopied(false), 2000);
     } catch (err) { console.error('Failed to copy!', err); }
@@ -134,7 +140,7 @@ function App() {
             const content = line.substring(6);
             if (content) {
               accContent += content;
-              // เรียกใช้ฟังก์ชัน cleanThaiSpacing ตรงนี้
+              // เรียกใช้ฟังก์ชัน cleanThaiSpacing ตรงนี้ (ตอนนี้ฟังก์ชันมีอยู่จริงแล้ว)
               const displayContent = cleanThaiSpacing(accContent); 
               setMessages(prev => {
                 const updated = [...prev];
@@ -270,7 +276,8 @@ function App() {
                                        : 'bg-white text-gray-700 border border-gray-100 rounded-t-3xl rounded-br-3xl rounded-bl-lg'
                     }`}>
                       <div className="prose prose-slate max-w-none text-sm font-medium">
-                        <ReactMarkdown>{m.content}</ReactMarkdown>
+                        {/* --- [FIX] ใช้ฟังก์ชัน cleanThaiSpacing ครอบตรงนี้เพื่อให้ Render ใหม่สวยงามเสมอ --- */}
+                        <ReactMarkdown>{cleanThaiSpacing(m.content)}</ReactMarkdown>
                       </div>
                     </div>
                     <div className={`absolute -bottom-8 ${m.role === 'user' ? 'left-0' : 'right-0'} opacity-0 group-hover:opacity-100 transition-opacity`}>
